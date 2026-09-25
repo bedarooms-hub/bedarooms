@@ -292,16 +292,26 @@ function useSWUpdate() {
 const ADMIN_EMAIL = "bedakaheart@gmail.com";
 const ADMIN_PASS = "202477";
 const ADMIN_KEY = "rlm:admin-auth";
+const RENTER_KEY = "rlm:renter-auth";
+function phoneToEmail(phone){ const d=String(phone).replace(/\D/g,""); return `r${d}@renter.beda-rooms.local`; }
+function isAdminSession(s){ return s?.user?.email===ADMIN_EMAIL || s?.user?.id==="admin-local"; }
+function isRenterSession(s){ return s?.user?.email?.endsWith("@renter.beda-rooms.local") || s?.user?.id==="renter-local"; }
 
 function useSupabaseAuth() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const cloudEnabled = typeof window !== "undefined" && window.storage?.isCloudEnabled;
   useEffect(() => {
-    // local admin fallback (hardcoded gate)
+    // local admin/renter fallback (hardcoded gate)
     const localAdmin = (()=>{ try{ return localStorage.getItem(ADMIN_KEY); }catch{return null}})();
     if (localAdmin === ADMIN_EMAIL) {
       setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
+      setAuthLoading(false);
+      return;
+    }
+    const localRenter = (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"null"); }catch{return null}})();
+    if (localRenter?.phone) {
+      setSession({ user: { email: phoneToEmail(localRenter.phone), id: "renter-local", phone: localRenter.phone } });
       setAuthLoading(false);
       return;
     }
@@ -309,18 +319,28 @@ function useSupabaseAuth() {
     let mounted = true;
     window.storage.getSession().then(s => {
       if (!mounted) return;
-      if (s) setSession(s);
-      else {
-        // also check local admin after cloud check
+      if (s) {
+        // attach phone if renter email
+        if (s.user?.email?.endsWith("@renter.beda-rooms.local") && s.user?.user_metadata?.phone) s.user.phone = s.user.user_metadata.phone;
+        setSession(s);
+      } else {
         const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
         if (la === ADMIN_EMAIL) setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
+        else {
+          const lr = (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"null"); }catch{return null}})();
+          if (lr?.phone) setSession({ user: { email: phoneToEmail(lr.phone), id: "renter-local", phone: lr.phone } });
+        }
       }
       setAuthLoading(false);
     });
-    const unsub = window.storage.onAuthStateChange((s) => { if (mounted) setSession(s); });
+    const unsub = window.storage.onAuthStateChange((s) => {
+      if (!mounted) return;
+      if (s?.user?.email?.endsWith("@renter.beda-rooms.local") && s.user?.user_metadata?.phone) s.user.phone = s.user.user_metadata.phone;
+      if (s) setSession(s);
+    });
     return () => { mounted = false; unsub?.(); };
   }, [cloudEnabled]);
-  const clearAdmin = () => { try{ localStorage.removeItem(ADMIN_KEY);}catch{}; setSession(null); };
+  const clearAdmin = () => { try{ localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(RENTER_KEY);}catch{}; setSession(null); };
   return { session, authLoading, cloudEnabled, clearAdmin };
 }
 
