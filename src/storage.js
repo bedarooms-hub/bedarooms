@@ -1,0 +1,188 @@
+// Hybrid storage: Supabase (cloud) + localStorage (offline cache)
+// - If VITE_SUPABASE_URL/KEY are set and user is logged in → cloud is primary, localStorage is cache/mirror
+// - If not configured or not logged in → localStorage only (original behavior)
+// - App keeps calling window.storage.get/set — no App.jsx shape change needed (except auth UI)
+// Adds: window.storage.getSession(), signIn, signUp, signOut, getUser helpers
+
+import { supabase, isSupabaseConfigured } from "./supabase.js";
+
+const PREFIX = "rlm:";
+
+function fullKey(key, shared) {
+  return `${PREFIX}${shared ? "shared" : "user"}:${key}`;
+}
+function isQuotaError(e) {
+  return e && (e.name === "QuotaExceededError" || e.code === 22 || e.code === 1014);
+}
+
+// Map App.jsx STORAGE_KEY ("rental-data") to Supabase table rental_data.data
+const CLOUD_KEY = "rental-data";
+
+async function cloudGet() {
+  if (!isSupabaseConfigured || !supabase) return null;
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return null;
+    const { data, error } = await supabase
+      .from("rental_data")
+      .select("data")
+      .eq("user_id", session.user.id)
+      .single();
+    if (error) {
+      // No row yet → treat as empty
+      if (error.code === "PGRST116") return null;
+      console.warn("[storage cloudGet]", error.message);
+      return null;
+    }
+    if (!data?.data) return null;
+    return { key: CLOUD_KEY, value: JSON.stringify(data.data), shared: false };
+  } catch (e) {
+    console.warn("[storage cloudGet] failed", e);
+    return null;
+  }
+}
+
+async function cloudSet(value) {
+  if (!isSupabaseConfigured || !supabase) return false;
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return false;
+    let parsed;
+    try { parsed = JSON.parse(value); } catch { parsed = {}; }
+    const { error } = await supabase
+      .from("rental_data")
+      .upsert({ user_id: session.user.id, data: parsed }, { onConflict: "user_id" });
+    if (error) {
+      console.warn("[storage cloudSet]", error.message);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("[storage cloudSet] failed", e);
+    return false;
+  }
+}
+
+window.storage = {
+  async get(key, shared = false) {
+    // Cloud path only for the main rental-data key when logged in
+    if (key === CLOUD_KEY && isSupabaseConfigured) {
+      const cloud = await cloudGet();
+      if (cloud) {
+        // Mirror to localStorage for offline access
+        try { localStorage.setItem(fullKey(key, shared), cloud.value); } catch {}
+        return cloud;
+      }
+      // No cloud or not logged in → fall through to local
+    }
+    try {
+      const raw = localStorage.getItem(fullKey(key, shared));
+      if (raw === null) return null;
+      return { key, value: raw, shared };
+    } catch (e) {
+      console.error("[storage.get] failed", e);
+      return null;
+    }
+  },
+
+  async set(key, value, shared = false) {
+    // Always write local cache first (offline-safe)
+    let localOk = false;
+    try {
+      localStorage.setItem(fullKey(key, shared), value);
+      localOk = true;
+    } catch (e) {
+      console.error("[storage.set local] failed", e);
+      if (isQuotaError(e)) return null;
+      // proceed to try cloud even if local failed
+    }
+    // Try cloud if this is the main key and user is logged in
+    if (key === CLOUD_KEY && isSupabaseConfigured) {
+      const cloudOk = await cloudSet(value);
+      // If cloud succeeded, consider it success even if local quota hit
+      if (cloudOk) return { key, value, shared };
+      // If offline / not logged in, local is enough
+      if (localOk) return { key, value, shared };
+      return null;
+    }
+    return localOk ? { key, value, shared } : null;
+  },
+
+  async delete(key, shared = false) {
+    try {
+      const existed = localStorage.getItem(fullKey(key, shared)) !== null;
+      localStorage.removeItem(fullKey(key, shared));
+      // Delete cloud row only if deleting the main blob
+      if (key === CLOUD_KEY && isSupabaseConfigured && supabase) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            await supabase.from("rental_data").delete().eq("user_id", session.user.id);
+          }
+        } catch (e) { console.warn("[storage.delete cloud]", e); }
+      }
+      return { key, deleted: existed, shared };
+    } catch (e) {
+      console.error("[storage.delete] failed", e);
+      return { key, deleted: false, shared };
+    }
+  },
+
+  async list(prefix = "", shared = false) {
+    try {
+      const searchPrefix = fullKey(prefix, shared);
+      const stripLen = fullKey("", shared).length;
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(searchPrefix)) keys.push(k.slice(stripLen));
+      }
+      return { keys, prefix, shared };
+    } catch (e) {
+      console.error("[storage.list] failed", e);
+      return { keys: [], prefix, shared };
+    }
+  },
+
+  // Auth helpers for App.jsx
+  async getSession() {
+    if (!isSupabaseConfigured || !supabase) return null;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      return session;
+    } catch { return null; }
+  },
+  async signUp(email, password) {
+    if (!isSupabaseConfigured) throw new Error("Supabase not configured — set .env");
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) throw error;
+    return data;
+  },
+  async signIn(email, password) {
+    if (!isSupabaseConfigured) throw new Error("Supabase not configured — set .env");
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    return data;
+  },
+  async signOut() {
+    if (!isSupabaseConfigured || !supabase) return;
+    await supabase.auth.signOut();
+  },
+  onAuthStateChange(cb) {
+    if (!isSupabaseConfigured || !supabase) return () => {};
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => cb(session));
+    return () => subscription.unsubscribe();
+  },
+  isCloudEnabled: isSupabaseConfigured,
+};
+
+window.__rlm_storageSize = () => {
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(PREFIX)) total += (localStorage.getItem(k) || "").length + k.length;
+  }
+  return total;
+};
+
+window.__rlm_supabaseReady = isSupabaseConfigured;

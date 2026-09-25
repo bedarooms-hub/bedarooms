@@ -1,0 +1,23 @@
+{
+  "promptqueue": {
+    "1": {
+      "id": 1,
+      "key": "clear",
+      "value": "/clear",
+      "positionInQueue": 1,
+      "sectionId": "section-1"
+    }
+  },
+  "sections": {
+    "section-1": {
+      "id": "section-1",
+      "name": "Default",
+      "isLocked": false,
+      "positionInQueue": 1
+    }
+  },
+  "isLocked": false,
+  "nextId": 2,
+  "nextSectionId": 2,
+  "autoClear": true
+}

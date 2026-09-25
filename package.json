@@ -1,0 +1,25 @@
+{
+  "name": "room-rental-manager",
+  "private": true,
+  "version": "1.1.0",
+  "description": "BeDa Rooms — Tenant & rent tracker (PWA, offline-ready) — monthly dues, 1% late interest, submeters, printable invoices & contracts",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "audit:pwa": "vite build && npx -y lighthouse http://localhost:4173 --only-categories=pwa --chrome-flags='--headless --no-sandbox' || echo 'Run preview first'"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.1",
+    "lucide-react": "^0.383.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0",
+    "vite-plugin-pwa": "^1.3.0",
+    "workbox-window": "^7.4.1"
+  }
+}
