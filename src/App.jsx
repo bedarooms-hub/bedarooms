@@ -4,6 +4,7 @@ import {
   Plus, Trash2, Pencil, Printer, CheckCircle2, AlertTriangle, Clock, X, Undo2, Download,
   Menu, Search, Upload, WifiOff, Smartphone, RefreshCw, LogOut, Home
 } from "lucide-react";
+import { supabase } from "./supabase.js";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const STORAGE_KEY = "rental-data";
@@ -437,21 +438,21 @@ function LoginGate({ session, showToast }) {
     setBusy(true); setError("");
     try {
       if (mode === "signup") {
-        // create Supabase account with phone in metadata
-        if (cloudEnabled && window.supabase) {
-          const { error } = await window.supabase.auth.signUp({ email: rEmail, password: renterPass, options: { data: { phone: p } } });
+        if (cloudEnabled && supabase) {
+          const { error } = await supabase.auth.signUp({ email: rEmail, password: renterPass, options: { data: { phone: p } } });
           if (error) throw error;
         } else {
           await window.storage.signUp(rEmail, renterPass);
         }
-        // also store locally for offline gate
         try { localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p })); } catch {}
         showToast("Renter account created — you can now sign in with your phone");
         setMode("signin");
       } else {
-        if (cloudEnabled) {
-          const { error } = await (window.supabase ? window.supabase.auth.signInWithPassword({ email: rEmail, password: renterPass }) : window.storage.signIn(rEmail, renterPass));
+        if (cloudEnabled && supabase) {
+          const { error } = await supabase.auth.signInWithPassword({ email: rEmail, password: renterPass });
           if (error) throw error;
+        } else {
+          await window.storage.signIn(rEmail, renterPass);
         }
         try { localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p })); } catch {}
         showToast("Welcome — loading your rental info…");
@@ -498,6 +499,102 @@ function LoginGate({ session, showToast }) {
     </div>
   );
 }
+
+function RenterPortal({ tenants, payments, settings, session, showToast, clearAdmin }) {
+  const phone = session?.user?.phone || (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"{}").phone; }catch{return null}})() || "";
+  const digits = String(phone).replace(/\D/g,"");
+  const myTenant = useMemo(()=>{
+    if (!digits) return null;
+    return tenants.find(t=>{
+      const c = String(t.contact||"").replace(/\D/g,"");
+      return c && (c===digits || c.slice(-10)===digits.slice(-10) || digits.slice(-10)===c.slice(-10));
+    }) || null;
+  }, [tenants, digits]);
+  const periods = myTenant ? getPeriodsForTenant(myTenant) : [];
+  const myPayments = myTenant ? (payments[myTenant.id]||{}) : {};
+  const history = useMemo(()=>{
+    if (!myTenant) return [];
+    const rows = [];
+    Object.entries(myPayments).forEach(([key, rec])=>{
+      if (rec?.status==="paid") {
+        const { year, month, half } = parsePeriodKey(key);
+        rows.push({ key, periodLabel: periodDisplayLabel(year, month, half), amountPaid: rec.amountPaid, paidDate: rec.paidDate, notes: rec.notes||"" });
+      }
+    });
+    rows.sort((a,b)=> (b.paidDate||"").localeCompare(a.paidDate||""));
+    return rows;
+  }, [myTenant, myPayments]);
+  const signOut = async()=>{ try{ localStorage.removeItem(RENTER_KEY);}catch{}; await window.storage.signOut(); clearAdmin?.(); window.location.reload(); };
+  return (
+    <div className="rlm-app">
+      <div className="rlm-topbar no-print" style={{ justifyContent:"space-between" }}>
+        <span style={{ fontFamily:"var(--font-display)", fontWeight:600 }}>BeDa Rooms — My Rental</span>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <span style={{ fontSize:11, background:"rgba(255,255,255,0.15)", padding:"4px 8px", borderRadius:4 }}>{phone || session?.user?.email}</span>
+          <button onClick={signOut} style={{ background:"rgba(255,255,255,0.12)", color:"white", border:"1px solid rgba(255,255,255,0.2)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4 }}><LogOut size={12}/> Sign out</button>
+        </div>
+      </div>
+      <div className="rlm-main" style={{ maxWidth:720, margin:"0 auto" }}>
+        {!myTenant ? (
+          <div className="rlm-card" style={{ borderColor:"var(--rust)" }}>
+            <h2 style={{ marginTop:0 }}>No tenant found for {phone ? formatPhone(phone) : "your phone"}</h2>
+            <p style={{ fontSize:13, color:"#5b6663" }}>Your phone isn’t linked to any tenant yet. Ask the owner (bedakaheart@gmail.com) to set your <strong>Contact number</strong> in Tenants → Edit to match this phone. Then reload.</p>
+            <p style={{ fontSize:12, color:"#5b6663" }}>Checked {tenants.length} tenant(s). Ensure Contact is digits only, e.g., 09xx xxx xxxx.</p>
+            <button className="rlm-btn rlm-btn-ghost" onClick={()=>window.location.reload()}><RefreshCw size={14}/> Reload</button>
+          </div>
+        ) : (
+          <>
+            <h1 className="rlm-h1">Welcome, {myTenant.name}</h1>
+            <p className="rlm-sub">{myTenant.room ? `${myTenant.room} • ` : ""}Move-in {formatDate(myTenant.moveInDate)} • {isSemiMonthly(myTenant) ? "15th & 30th" : `Due ${ordinal(myTenant.dueDay)}`}</p>
+            <div className="rlm-card">
+              <h3 style={{ marginTop:0, fontFamily:"var(--font-display)" }}>My Information</h3>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, fontSize:14 }}>
+                <div><div className="rlm-label">ID Number</div>{myTenant.idNumber || "—"}</div>
+                <div><div className="rlm-label">Contact</div>{myTenant.contact || "—"}</div>
+                <div style={{ gridColumn:"1 / -1" }}><div className="rlm-label">Address</div>{myTenant.address || "—"}</div>
+                <div><div className="rlm-label">Monthly Rent</div><span className="rlm-mono">{formatMoney(myTenant.monthlyRent, settings.currency)}</span></div>
+                <div><div className="rlm-label">Room</div>{myTenant.room || "—"}</div>
+                <div><div className="rlm-label">Advance / Deposit</div>{depositSummary(myTenant, settings.currency)}</div>
+                <div><div className="rlm-label">Status</div>{myTenant.paymentFrequency==="semimonthly" ? "Twice a month" : "Monthly"}</div>
+              </div>
+              {(myTenant.additionalFees||[]).length>0 && <div style={{ marginTop:12, fontSize:12, color:"#5b6663" }}>Recurring: {(myTenant.additionalFees||[]).map(f=>`${f.label} ${formatMoney(f.amount, settings.currency)}`).join(", ")}</div>}
+            </div>
+            <div className="rlm-card" style={{ marginTop:16 }}>
+              <h3 style={{ marginTop:0, fontFamily:"var(--font-display)" }}>Payment History {history.length ? `— ${history.length} paid` : ""}</h3>
+              {history.length===0 ? <p style={{ fontSize:13, color:"#5b6663" }}>No payments yet. Once owner marks rent as paid, it appears here with OR & invoice.</p> : (
+                <table className="rlm-table">
+                  <thead><tr><th>Period</th><th>Date paid</th><th>Amount paid</th></tr></thead>
+                  <tbody>
+                    {history.map(h=> (
+                      <tr key={h.key}><td>{h.periodLabel}</td><td className="rlm-mono">{formatDate(h.paidDate)}</td><td className="rlm-mono">{formatMoney(h.amountPaid, settings.currency)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {myTenant && history.length>0 && <div style={{ fontSize:12, color:"#5b6663", marginTop:8 }}>Total paid: <span className="rlm-mono" style={{ fontWeight:700 }}>{formatMoney(history.reduce((s,h)=>s+h.amountPaid,0), settings.currency)}</span></div>}
+            </div>
+            <div className="rlm-card" style={{ marginTop:16 }}>
+              <h3 style={{ marginTop:0, fontFamily:"var(--font-display)" }}>My Contract</h3>
+              <p style={{ fontSize:13, color:"#5b6663" }}>Your signed rental agreement (read-only).</p>
+              <div className="rlm-printable" style={{ border:"1px solid var(--line)", borderRadius:6, padding:16, background:"white", fontSize:13, lineHeight:1.6 }}>
+                <div style={{ textAlign:"center", fontFamily:"var(--font-display)", fontWeight:700 }}>ROOM RENTAL AGREEMENT</div>
+                <div style={{ textAlign:"center", fontSize:11, color:"#5b6663", marginBottom:12 }}>Tenant: {myTenant.name} • {myTenant.room || ""} • {formatDate(myTenant.moveInDate)}</div>
+                <p><strong>Landlord:</strong> {settings.landlordName || "—"} — {settings.landlordAddress || ""}</p>
+                <p><strong>Tenant:</strong> {myTenant.name} ({myTenant.idNumber || "—"}) — {myTenant.address || ""}</p>
+                <p><strong>Rent:</strong> {isSemiMonthly(myTenant) ? `${formatMoney(myTenant.monthlyRent, settings.currency)}/mo split 15th & 30th` : `${formatMoney(myTenant.monthlyRent, settings.currency)}/mo due ${ordinal(myTenant.dueDay)}`}</p>
+                <p><strong>Advance/Deposit:</strong> {depositSummary(myTenant, settings.currency)}</p>
+                <p style={{ fontSize:12, color:"#5b6663" }}>This is your copy. Ask owner for signed Official Receipt for each paid period.</p>
+                <button className="rlm-btn rlm-btn-ghost no-print" style={{ marginTop:8 }} onClick={()=>window.print()}><Printer size={14}/> Print contract</button>
+              </div>
+            </div>
+            <div style={{ marginTop:12, fontSize:11, color:"#5b6663" }}>Need help? Contact owner: {settings.landlordContact || "bedakaheart@gmail.com"}</div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+function formatPhone(p){ const d=String(p).replace(/\D/g,""); if(d.length===11) return d.replace(/(\d{4})(\d{3})(\d{4})/,"$1 $2 $3"); return p; }
 
 function StatusStamp({ status, size = "sm" }) {
   const cfg = {
@@ -787,8 +884,20 @@ export default function RoomRentalManager() {
       </div>
     );
   }
-  if (cloudEnabled && !session) {
+  if (!session) {
     return <LoginGate session={session} showToast={showToast} />;
+  }
+  if (isRenterSession(session)) {
+    if (loading) {
+      return (
+        <div style={{ minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#EFEDE3", fontFamily:"sans-serif", color:"#1B2A28", flexDirection:"column", gap:12 }}>
+          <div style={{ width:32, height:32, border:"3px solid #C9C3B0", borderTopColor:"#1B2A28", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
+          <div>Loading your rental…</div>
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        </div>
+      );
+    }
+    return <RenterPortal tenants={tenants} payments={payments} settings={settings} session={session} showToast={showToast} clearAdmin={clearAdmin} />;
   }
 
   return (
