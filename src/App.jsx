@@ -31,6 +31,38 @@ function formatMoney(amount, currency) {
   const n = Number(amount) || 0;
   return `${currency}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+function amountInWords(n) {
+  const num = Math.floor(Number(n) || 0);
+  if (num === 0) return "Zero";
+  const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine","Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen","Seventeen","Eighteen","Nineteen"];
+  const tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  function chunkToWords(c) {
+    let s = "";
+    if (c >= 100) { s += ones[Math.floor(c/100)] + " Hundred "; c %= 100; }
+    if (c >= 20) { s += tens[Math.floor(c/10)] + " "; c %= 10; }
+    if (c > 0) s += ones[c] + " ";
+    return s;
+  }
+  let s = "";
+  let x = num;
+  const scales = [["",""], ["Thousand","Thousand"], ["Million","Million"], ["Billion","Billion"]];
+  let i = 0;
+  while (x > 0) {
+    const chunk = x % 1000;
+    if (chunk) s = chunkToWords(chunk) + scales[i][0] + " " + s;
+    x = Math.floor(x / 1000);
+    i++;
+  }
+  return s.trim().replace(/\s+/g," ");
+}
+function pesoWords(amount, currency) {
+  const n = Number(amount) || 0;
+  const peso = Math.floor(n);
+  const cent = Math.round((n - peso)*100);
+  let s = amountInWords(peso) + " Pesos";
+  if (cent) s += " and " + amountInWords(cent) + " Centavos";
+  return s;
+}
 function downloadFile(filename, content, mime) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -426,7 +458,7 @@ export default function RoomRentalManager() {
   const [tab, setTab] = useState(() => {
     const hash = (typeof location !== "undefined" && location.hash.replace("#","")) || "";
     const ls = (()=>{ try{ return localStorage.getItem(TAB_KEY);}catch{return null}})();
-    const valid = ["dashboard","tenants","payments","invoice","contract","settings"];
+    const valid = ["dashboard","tenants","payments","invoice","receipt","contract","settings"];
     if (valid.includes(hash)) return hash;
     if (valid.includes(ls)) return ls;
     return "dashboard";
@@ -435,6 +467,7 @@ export default function RoomRentalManager() {
   const [tenantForm, setTenantForm] = useState(null);
   const [selectedTenantId, setSelectedTenantId] = useState(null);
   const [invoicePeriodKey, setInvoicePeriodKey] = useState(null);
+  const [receiptPeriodKey, setReceiptPeriodKey] = useState(null);
   const [payingKey, setPayingKey] = useState(null);
   const [paymentForm, setPaymentForm] = useState({ amount: "", date: todayISO() });
   const [chargesOpenKey, setChargesOpenKey] = useState(null);
@@ -451,7 +484,7 @@ export default function RoomRentalManager() {
   }, [tab]);
   // handle browser back/forward hash
   useEffect(()=>{
-    const onHash=()=>{ const h=location.hash.replace("#",""); const valid=["dashboard","tenants","payments","invoice","contract","settings"]; if(valid.includes(h)) setTab(h); };
+    const onHash=()=>{ const h=location.hash.replace("#",""); const valid=["dashboard","tenants","payments","invoice","receipt","contract","settings"]; if(valid.includes(h)) setTab(h); };
     window.addEventListener("hashchange", onHash); return ()=>window.removeEventListener("hashchange", onHash);
   },[]);
 
@@ -664,6 +697,7 @@ export default function RoomRentalManager() {
     { id: "tenants", label: "Tenants", Icon: Users },
     { id: "payments", label: "Payments", Icon: Receipt },
     { id: "invoice", label: "Invoice", Icon: FileText },
+    { id: "receipt", label: "Official Receipt", Icon: Receipt },
     { id: "contract", label: "Contract", Icon: FileText },
     { id: "settings", label: "Settings", Icon: SettingsIcon },
   ];
@@ -793,6 +827,7 @@ export default function RoomRentalManager() {
             saveMeterReading={saveMeterReading} removeMeterReading={removeMeterReading}
             markPaid={markPaid} undoPaid={undoPaid}
             goInvoice={(key) => { setInvoicePeriodKey(key); setTab("invoice"); }}
+            goReceipt={(key) => { setReceiptPeriodKey(key); setTab("receipt"); }}
           />
         )}
 
@@ -801,6 +836,14 @@ export default function RoomRentalManager() {
             tenants={tenants} payments={payments} settings={settings}
             selectedTenant={selectedTenant} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId}
             invoicePeriodKey={invoicePeriodKey} setInvoicePeriodKey={setInvoicePeriodKey}
+          />
+        )}
+
+        {tab === "receipt" && (
+          <OfficialReceiptTab
+            tenants={tenants} payments={payments} settings={settings}
+            selectedTenant={selectedTenant} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId}
+            receiptPeriodKey={receiptPeriodKey} setReceiptPeriodKey={setReceiptPeriodKey}
           />
         )}
 
@@ -1176,7 +1219,7 @@ function TenantPicker({ tenants, selectedTenantId, setSelectedTenantId }) {
   );
 }
 
-function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTenantId, setSelectedTenantId, payingKey, setPayingKey, paymentForm, setPaymentForm, chargesOpenKey, setChargesOpenKey, chargeInput, setChargeInput, addCharge, removeCharge, saveMeterReading, removeMeterReading, notesOpenKey, setNotesOpenKey, noteInput, setNoteInput, saveNote, markPaid, undoPaid, goInvoice }) {
+function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTenantId, setSelectedTenantId, payingKey, setPayingKey, paymentForm, setPaymentForm, chargesOpenKey, setChargesOpenKey, chargeInput, setChargeInput, addCharge, removeCharge, saveMeterReading, removeMeterReading, notesOpenKey, setNotesOpenKey, noteInput, setNoteInput, saveNote, markPaid, undoPaid, goInvoice, goReceipt }) {
   const periods = selectedTenant ? getPeriodsForTenant(selectedTenant) : [];
   const submeters = selectedTenant?.submeters || [];
   const [meterInputs, setMeterInputs] = useState({});
@@ -1275,8 +1318,9 @@ function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTena
                             </td>
                             <td style={{ whiteSpace: "nowrap" }}>
                               {info.status === "paid" ? (
-                                <div style={{ display: "flex", gap: 6 }}>
+                                <div style={{ display: "flex", gap: 6, flexWrap:"wrap" }}>
                                   <button className="rlm-btn rlm-btn-ghost" style={{ padding: "6px 10px" }} onClick={() => goInvoice(period.key)}>Invoice</button>
+                                  <button className="rlm-btn rlm-btn-brass" style={{ padding: "6px 10px" }} onClick={() => goReceipt(period.key)}>O.R.</button>
                                   <button className="rlm-btn rlm-btn-ghost" style={{ padding: 6 }} title="Undo payment" onClick={() => undoPaid(selectedTenant, period.key)}><Undo2 size={14} /></button>
                                 </div>
                               ) : (
@@ -1474,6 +1518,102 @@ function InvoiceTab({ tenants, payments, settings, selectedTenant, selectedTenan
               <button className="no-print rlm-btn rlm-btn-primary" style={{ marginTop: 16 }} onClick={() => window.print()}><Printer size={15} /> Print / Save as PDF</button>
             </>
           )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selectedTenantId, setSelectedTenantId, receiptPeriodKey, setReceiptPeriodKey }) {
+  const allPeriods = selectedTenant ? getPeriodsForTenant(selectedTenant) : [];
+  const paidPeriods = allPeriods.filter(p => {
+    const info = getPeriodInfo(selectedTenant, payments, p.year, p.month, p.half);
+    return info.status === "paid";
+  });
+  const activePeriod = paidPeriods.find(p => p.key === receiptPeriodKey) || paidPeriods[0] || allPeriods[0];
+  const info = selectedTenant && activePeriod ? getPeriodInfo(selectedTenant, payments, activePeriod.year, activePeriod.month, activePeriod.half) : null;
+  const [orNo, setOrNo] = useState("");
+  const [method, setMethod] = useState("Cash");
+  useEffect(() => {
+    if (selectedTenant && activePeriod) {
+      const base = `OR-${activePeriod.key}-${selectedTenant.id.slice(0,4).toUpperCase()}`;
+      setOrNo(base);
+    }
+  }, [selectedTenant?.id, activePeriod?.key]);
+  if (tenants.length === 0) {
+    return <div className="rlm-card"><p style={{ margin:0 }}>Add a tenant first to issue a receipt.</p></div>;
+  }
+  return (
+    <div>
+      <h1 className="rlm-h1 no-print">Official Receipt</h1>
+      <p className="rlm-sub no-print">Issue a BIR-style Official Receipt for <strong>paid</strong> rent — distinct from Invoice (which is a bill). Only paid periods can be receipted.</p>
+      <div className="no-print" style={{ display:"flex", gap:16, flexWrap:"wrap", marginBottom:20 }}>
+        <TenantPicker tenants={tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />
+        {selectedTenant && (
+          <div className="rlm-field" style={{ maxWidth:260 }}>
+            <label className="rlm-label">Paid period</label>
+            <select className="rlm-select" value={activePeriod?.key || ""} onChange={e=>setReceiptPeriodKey(e.target.value)}>
+              {paidPeriods.length === 0 ? <option value="">— No paid periods yet —</option> : paidPeriods.map(p => <option key={p.key} value={p.key}>{periodDisplayLabel(p.year, p.month, p.half)} — {formatMoney(getPeriodInfo(selectedTenant, payments, p.year, p.month, p.half).amountPaid, settings.currency)}</option>)}
+            </select>
+            {paidPeriods.length === 0 && <div style={{ fontSize:11, color:"var(--rust)", marginTop:4 }}>Mark a period as Paid in Payments first.</div>}
+          </div>
+        )}
+      </div>
+      {selectedTenant && info && (
+        <>
+          <div className="no-print rlm-card" style={{ maxWidth:480, display:"flex", gap:12, flexWrap:"wrap", marginBottom:12 }}>
+            <div className="rlm-field" style={{ flex:"1 1 160px", marginBottom:0 }}><label className="rlm-label">OR No. (editable)</label><input className="rlm-input" value={orNo} onChange={e=>setOrNo(e.target.value)} placeholder="OR-2026-0001" /></div>
+            <div className="rlm-field" style={{ flex:"1 1 140px", marginBottom:0 }}><label className="rlm-label">Payment method</label>
+              <select className="rlm-select" value={method} onChange={e=>setMethod(e.target.value)}>
+                <option>Cash</option><option>GCash</option><option>Bank Transfer</option><option>Check</option>
+              </select>
+            </div>
+          </div>
+          {info.status !== "paid" ? (
+            <div className="rlm-card" style={{ maxWidth:640, borderColor:"var(--rust)" }}>
+              <p style={{ margin:0, color:"var(--rust)" }}>This period is not yet paid — receipt can only be issued for <strong>Paid</strong> status. Current: <strong>{info.status}</strong>. Go to Payments → Mark paid.</p>
+            </div>
+          ) : (
+            <div className="rlm-printable rlm-card" style={{ maxWidth:640, border:"2px solid var(--ink)" }}>
+              <div style={{ textAlign:"center", borderBottom:"2px solid var(--ink)", paddingBottom:12, marginBottom:16 }}>
+                <div style={{ fontFamily:"var(--font-display)", fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:"#5b6663" }}>BeDa Rooms</div>
+                <div style={{ fontFamily:"var(--font-display)", fontSize:22, fontWeight:800, letterSpacing:"0.04em" }}>OFFICIAL RECEIPT</div>
+                <div style={{ fontSize:11, color:"#5b6663" }}>{settings.landlordAddress || ""} {settings.landlordContact ? `• ${settings.landlordContact}` : ""}</div>
+              </div>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:12, flexWrap:"wrap", gap:8 }}>
+                <div><span className="rlm-label">OR No.</span> <span className="rlm-mono" style={{ fontWeight:700 }}>{orNo || "—"}</span></div>
+                <div><span className="rlm-label">Date</span> {formatDate(info.paidDate)}</div>
+              </div>
+              <div style={{ background:"#F4F1E7", border:"1px solid var(--line)", borderRadius:6, padding:"10px 14px", marginBottom:14, fontSize:14 }}>
+                <div><span className="rlm-label">Received from</span> <strong>{selectedTenant.name}</strong>{selectedTenant.room ? ` — ${selectedTenant.room}` : ""}</div>
+                {selectedTenant.address && <div style={{ fontSize:12, color:"#5b6663" }}>{selectedTenant.address}</div>}
+                <div style={{ marginTop:6 }}><span className="rlm-label">Amount</span> <span className="rlm-mono" style={{ fontSize:18, fontWeight:700 }}>{formatMoney(info.amountPaid, settings.currency)}</span> <span style={{ fontSize:12, color:"#5b6663" }}>via {method}</span></div>
+                <div style={{ fontSize:12, fontStyle:"italic", color:"#5b6663", borderTop:"1px dashed var(--line)", marginTop:8, paddingTop:6 }}>{pesoWords(info.amountPaid, settings.currency)}.</div>
+              </div>
+              <div style={{ fontSize:13, marginBottom:10 }}><span className="rlm-label">Payment for</span> {periodDisplayLabel(activePeriod.year, activePeriod.month, activePeriod.half)} — {info.recurringFees.map(f=>f.label).join(", ") ? `incl. ${info.recurringFees.map(f=>f.label).join(", ")}` : "Monthly rent"}{info.charges.length ? ` + ${info.charges.map(c=>c.label).join(", ")}` : ""}</div>
+              <table className="rlm-table" style={{ marginBottom:14, fontSize:12 }}>
+                <thead><tr><th>Description</th><th style={{ textAlign:"right" }}>Amount</th></tr></thead>
+                <tbody>
+                  <tr><td>Rent ({periodDisplayLabel(activePeriod.year, activePeriod.month, activePeriod.half)})</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.base, settings.currency)}</td></tr>
+                  {info.recurringFees.map(f=> <tr key={f.id}><td>{f.label}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(f.amount, settings.currency)}</td></tr>)}
+                  {info.charges.map(c=> <tr key={c.id}><td>{c.label}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(c.amount, settings.currency)}</td></tr>)}
+                  {info.interest > 0 && <tr><td>Late interest 1%</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.interest, settings.currency)}</td></tr>}
+                  <tr style={{ fontWeight:700, background:"#F4F1E7" }}><td>Total paid</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.amountPaid, settings.currency)}</td></tr>
+                </tbody>
+              </table>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, marginTop:24, fontSize:12 }}>
+                <div style={{ borderTop:"1px solid var(--ink)", paddingTop:6, textAlign:"center" }}>{settings.landlordName || "Authorized Signature"}<div style={{ fontSize:10, color:"#5b6663" }}>Collector / Landlord</div></div>
+                <div style={{ borderTop:"1px solid var(--ink)", paddingTop:6, textAlign:"center" }}>{selectedTenant.name}<div style={{ fontSize:10, color:"#5b6663" }}>Payor</div></div>
+              </div>
+              <div style={{ fontSize:10, color:"#5b6663", textAlign:"center", marginTop:16, borderTop:"1px dashed var(--line)", paddingTop:8 }}>
+                This Official Receipt acknowledges payment received — keep for records. Invoice is a bill (amount due); Receipt is proof of payment.
+              </div>
+            </div>
+          )}
+          <div className="no-print" style={{ display:"flex", gap:10, marginTop:16, flexWrap:"wrap" }}>
+            <button className="rlm-btn rlm-btn-primary" disabled={info.status !== "paid"} onClick={()=>window.print()}><Printer size={15}/> Print / Save as PDF</button>
+            {info.status !== "paid" && <span style={{ fontSize:12, color:"var(--rust)", alignSelf:"center" }}>Print disabled — mark as paid first.</span>}
+          </div>
         </>
       )}
     </div>
