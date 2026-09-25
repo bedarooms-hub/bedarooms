@@ -899,6 +899,33 @@ function Dashboard({ tenants, payments, settings, onGoTenants }) {
     downloadFile(`payment-history-${todayISO()}.csv`, toCSV(csvRows), "text/csv;charset=utf-8;");
   }
 
+  // Yearly income — owner summary
+  const yearly = useMemo(()=>{
+    const map = {};
+    history.forEach(h=>{
+      const yr = h.paidDate ? Number(String(h.paidDate).slice(0,4)) : null;
+      if (!yr) return;
+      if (!map[yr]) map[yr] = { year: yr, total: 0, count: 0, byMonth: Array(12).fill(0), byTenant: {} };
+      map[yr].total += Number(h.amountPaid)||0;
+      map[yr].count += 1;
+      const mo = Number(String(h.paidDate).slice(5,7))-1;
+      if (mo>=0 && mo<12) map[yr].byMonth[mo] += Number(h.amountPaid)||0;
+      map[yr].byTenant[h.tenantName] = (map[yr].byTenant[h.tenantName]||0) + Number(h.amountPaid)||0;
+    });
+    return Object.values(map).sort((a,b)=>b.year - a.year);
+  }, [history]);
+  const [yearSel, setYearSel] = useState(()=> new Date().getFullYear());
+  const yearData = useMemo(()=> yearly.find(x=>x.year===yearSel) || yearly[0] || null, [yearly, yearSel]);
+  const allYears = yearly.map(x=>x.year);
+  if (allYears.length && !allYears.includes(yearSel) && yearly.length) {
+    // keep controlled if data loads later — handled via effect below would cause set during render, so just default
+  }
+  function downloadYearCSV() {
+    if (!yearData) return;
+    const rows = [["Month","Income"],["January",yearData.byMonth[0]],["February",yearData.byMonth[1]],["March",yearData.byMonth[2]],["April",yearData.byMonth[3]],["May",yearData.byMonth[4]],["June",yearData.byMonth[5]],["July",yearData.byMonth[6]],["August",yearData.byMonth[7]],["September",yearData.byMonth[8]],["October",yearData.byMonth[9]],["November",yearData.byMonth[10]],["December",yearData.byMonth[11]]];
+    downloadFile(`yearly-income-${yearData.year}.csv`, toCSV(rows), "text/csv;charset=utf-8;");
+  }
+
   return (
     <div>
       <h1 className="rlm-h1">Dashboard</h1>
@@ -972,6 +999,76 @@ function Dashboard({ tenants, payments, settings, onGoTenants }) {
           )}
         </div>
       )}
+
+      {/* Yearly Income — owner summary */}
+      <div className="rlm-card" style={{ marginTop: 16, borderColor: yearly.length ? "var(--ink)" : undefined }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10, marginBottom:12 }}>
+          <h2 style={{ margin:0, fontSize:16 }}>Yearly Income — Owner Summary</h2>
+          <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+            <select className="rlm-select" style={{ minWidth:110 }} value={yearSel} onChange={e=>setYearSel(Number(e.target.value))}>
+              {[...new Set([...allYears, new Date().getFullYear()])].sort((a,b)=>b-a).map(yr=> <option key={yr} value={yr}>{yr}</option>)}
+            </select>
+            {yearData && <button className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={downloadYearCSV}><Download size={14}/> Year CSV</button>}
+            <button className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={()=>window.print()}><Printer size={14}/> Print</button>
+          </div>
+        </div>
+        {yearly.length === 0 ? (
+          <p style={{ fontSize:13, color:"#5b6663" }}>No paid rent yet — yearly totals will appear here once you mark periods as Paid. This summary is owner-only.</p>
+        ) : (
+          <>
+            <div className="rlm-grid-stats" style={{ marginBottom:12 }}>
+              <div className="rlm-card" style={{ background:"#F4F1E7" }}><div className="rlm-stat-label">{yearData ? yearData.year : yearSel} total</div><div className="rlm-stat-value" style={{ color:"var(--green)" }}>{yearData ? formatMoney(yearData.total, settings.currency) : formatMoney(0, settings.currency)}</div><div style={{ fontSize:11, color:"#5b6663" }}>{yearData ? `${yearData.count} payment(s) • avg ${formatMoney(yearData.total/12, settings.currency)}/mo` : "—"}</div></div>
+              <div className="rlm-card"><div className="rlm-stat-label">All-time total</div><div className="rlm-stat-value">{formatMoney(yearly.reduce((s,x)=>s+x.total,0), settings.currency)}</div><div style={{ fontSize:11, color:"#5b6663" }}>{yearly.reduce((s,x)=>s+x.count,0)} payments across {yearly.length} year(s)</div></div>
+              <div className="rlm-card"><div className="rlm-stat-label">Best month ({yearData?.year || ""})</div><div className="rlm-stat-value">{yearData ? `${MONTHS[yearData.byMonth.indexOf(Math.max(...yearData.byMonth))]?.slice(0,3)} — ${formatMoney(Math.max(...yearData.byMonth), settings.currency)}` : "—"}</div></div>
+            </div>
+            {yearData ? (
+              <>
+                <div style={{ overflowX:"auto", marginBottom:12 }}>
+                  <div style={{ display:"flex", alignItems:"flex-end", gap:6, height:90, minWidth: 520, padding:"8px 0" }}>
+                    {yearData.byMonth.map((v,i)=>{
+                      const max = Math.max(...yearData.byMonth, 1);
+                      const h = Math.round((v/max)*72);
+                      return (
+                        <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                          <div title={`${MONTHS[i]}: ${formatMoney(v, settings.currency)}`} style={{ width:"100%", height: h, background: v ? "var(--ink)" : "#E8E6E0", borderRadius:4, minHeight:4 }} />
+                          <span style={{ fontSize:10, color:"#5b6663" }}>{MONTHS[i].slice(0,3)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <table className="rlm-table" style={{ marginBottom:10 }}>
+                  <thead><tr><th>Month</th><th style={{ textAlign:"right" }}>Income</th><th style={{ textAlign:"right" }}>Share</th></tr></thead>
+                  <tbody>
+                    {yearData.byMonth.map((v,i)=> (
+                      <tr key={i} style={{ opacity: v ? 1 : 0.5 }}><td>{MONTHS[i]}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(v, settings.currency)}</td><td style={{ textAlign:"right", fontSize:12, color:"#5b6663" }}>{yearData.total ? `${((v/yearData.total)*100).toFixed(1)}%` : "—"}</td></tr>
+                    ))}
+                    <tr style={{ fontWeight:700, background:"#F4F1E7" }}><td>Total {yearData.year}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(yearData.total, settings.currency)}</td><td></td></tr>
+                  </tbody>
+                </table>
+                <div style={{ fontSize:12, color:"#5b6663", marginBottom:8 }}>By tenant ({yearData.year}):</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:8 }}>
+                  {Object.entries(yearData.byTenant).sort((a,b)=>b[1]-a[1]).map(([name, amt])=> (
+                    <span key={name} style={{ background:"white", border:"1px solid var(--line)", borderRadius:20, padding:"4px 10px", fontSize:12 }}>{name} — <span className="rlm-mono" style={{ fontWeight:600 }}>{formatMoney(amt, settings.currency)}</span></span>
+                  ))}
+                </div>
+                <table className="rlm-table">
+                  <thead><tr><th>Year</th><th>Payments</th><th style={{ textAlign:"right" }}>Total income</th></tr></thead>
+                  <tbody>
+                    {yearly.map(y=> (
+                      <tr key={y.year} style={{ background: y.year===yearData.year ? "#F4F1E7" : "transparent", fontWeight: y.year===yearData.year ? 600 : 400 }}>
+                        <td>{y.year}</td><td>{y.count}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(y.total, settings.currency)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            ) : (
+              <p style={{ fontSize:13, color:"#5b6663" }}>No income for {yearSel} yet.</p>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
