@@ -395,19 +395,21 @@ function AuthPanel({ session, showToast }) {
 }
 
 function LoginGate({ session, showToast }) {
+  const [tab, setTab] = useState("admin"); // admin | renter
   const [email, setEmail] = useState(ADMIN_EMAIL);
   const [password, setPassword] = useState("");
+  const [phone, setPhone] = useState("");
+  const [renterPass, setRenterPass] = useState("");
   const [mode, setMode] = useState("signin");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const cloudEnabled = window.storage?.isCloudEnabled;
-  const submit = async (e) => {
+
+  const submitAdmin = async (e) => {
     e?.preventDefault();
     if (!email || !password) { setError("Enter email and password"); return; }
-    // Hardcoded admin bypass — works even if Supabase email not confirmed
     if (email === ADMIN_EMAIL && password === ADMIN_PASS) {
       try { localStorage.setItem(ADMIN_KEY, ADMIN_EMAIL); } catch {}
-      // Try Supabase sign-in in background, but don't block gate
       if (cloudEnabled) window.storage.signIn(email, password).catch(()=>{});
       showToast("Admin access granted");
       window.location.reload();
@@ -426,21 +428,73 @@ function LoginGate({ session, showToast }) {
     } catch (err) { setError(err.message || "Auth failed"); }
     finally { setBusy(false); }
   };
+  const submitRenter = async (e) => {
+    e?.preventDefault();
+    const p = String(phone).replace(/\D/g,"");
+    if (!p || !renterPass) { setError("Enter phone and password"); return; }
+    if (p.length < 10) { setError("Enter valid phone number (10-11 digits)"); return; }
+    const rEmail = phoneToEmail(p);
+    setBusy(true); setError("");
+    try {
+      if (mode === "signup") {
+        // create Supabase account with phone in metadata
+        if (cloudEnabled && window.supabase) {
+          const { error } = await window.supabase.auth.signUp({ email: rEmail, password: renterPass, options: { data: { phone: p } } });
+          if (error) throw error;
+        } else {
+          await window.storage.signUp(rEmail, renterPass);
+        }
+        // also store locally for offline gate
+        try { localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p })); } catch {}
+        showToast("Renter account created — you can now sign in with your phone");
+        setMode("signin");
+      } else {
+        if (cloudEnabled) {
+          const { error } = await (window.supabase ? window.supabase.auth.signInWithPassword({ email: rEmail, password: renterPass }) : window.storage.signIn(rEmail, renterPass));
+          if (error) throw error;
+        }
+        try { localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p })); } catch {}
+        showToast("Welcome — loading your rental info…");
+        window.location.reload();
+      }
+    } catch (err) { setError(err.message || "Phone login failed — ask admin to confirm your number is registered as tenant contact"); }
+    finally { setBusy(false); }
+  };
+
   return (
     <div style={{ minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#EFEDE3", padding:20, fontFamily:"var(--font-body, sans-serif)" }}>
-      <form onSubmit={submit} style={{ background:"white", border:"1px solid var(--line)", borderRadius:10, padding:24, maxWidth:380, width:"100%", boxShadow:"0 8px 30px rgba(0,0,0,0.08)" }}>
+      <div style={{ background:"white", border:"1px solid var(--line)", borderRadius:10, padding:24, maxWidth:400, width:"100%", boxShadow:"0 8px 30px rgba(0,0,0,0.08)" }}>
         <div style={{ fontFamily:"var(--font-display)", fontSize:22, fontWeight:700, color:"#1B2A28" }}>BeDa Rooms</div>
-        <div style={{ fontSize:13, color:"#5b6663", marginBottom:16 }}>Sign in to access your rental manager. {cloudEnabled ? "Cloud-synced & PWA offline-ready." : "Set VITE_SUPABASE_* in .env to enable cloud."}</div>
-        {!cloudEnabled && <div style={{ background:"#FFF3CD", border:"1px solid #FFE69C", borderRadius:6, padding:10, fontSize:12, marginBottom:12 }}>Supabase not configured — login will not persist. Add <code>.env</code> and redeploy.</div>}
-        <div className="rlm-field"><label className="rlm-label">Email</label><input className="rlm-input" type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" /></div>
-        <div className="rlm-field"><label className="rlm-label">Password</label><input className="rlm-input" type="password" required value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" autoComplete={mode==="signin"?"current-password":"new-password"} /></div>
-        {error && <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", color:"var(--rust)", padding:"8px 10px", borderRadius:4, fontSize:12, marginBottom:10 }}>{error}</div>}
-        <button type="submit" className="rlm-btn rlm-btn-primary" style={{ width:"100%", justifyContent:"center", padding:"10px" }} disabled={busy}>{busy ? "Please wait…" : mode==="signup" ? "Create account" : "Sign in"}</button>
-        <div style={{ display:"flex", justifyContent:"center", marginTop:10 }}>
-          <button type="button" className="rlm-btn rlm-btn-ghost" style={{ fontSize:12, padding:"6px 10px" }} onClick={()=>{ setMode(mode==="signup"?"signin":"signup"); setError(""); }}>{mode==="signup" ? "Have an account? Sign in" : "Need an account? Sign up"}</button>
+        <div style={{ fontSize:13, color:"#5b6663", marginBottom:12 }}>Choose how to sign in — Admin (owner) or Renter (phone).</div>
+        <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+          <button onClick={()=>{ setTab("admin"); setError(""); }} className={tab==="admin" ? "rlm-btn rlm-btn-primary" : "rlm-btn rlm-btn-ghost"} style={{ flex:1, justifyContent:"center" }}>Admin</button>
+          <button onClick={()=>{ setTab("renter"); setError(""); }} className={tab==="renter" ? "rlm-btn rlm-btn-primary" : "rlm-btn rlm-btn-ghost"} style={{ flex:1, justifyContent:"center" }}><Smartphone size={14}/> Renter</button>
         </div>
-        <div style={{ fontSize:11, color:"#5b6663", textAlign:"center", marginTop:10 }}>No one can open the app without signing in. Data is RLS-isolated per user.</div>
-      </form>
+        {!cloudEnabled && <div style={{ background:"#FFF3CD", border:"1px solid #FFE69C", borderRadius:6, padding:10, fontSize:12, marginBottom:12 }}>Supabase not configured — renter sync needs cloud. Add <code>.env</code> and redeploy.</div>}
+        {tab==="admin" ? (
+          <form onSubmit={submitAdmin}>
+            <div className="rlm-field"><label className="rlm-label">Admin Email</label><input className="rlm-input" type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="bedakaheart@gmail.com" autoComplete="email" /></div>
+            <div className="rlm-field"><label className="rlm-label">Password</label><input className="rlm-input" type="password" required value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" autoComplete={mode==="signin"?"current-password":"new-password"} /></div>
+            {error && <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", color:"var(--rust)", padding:"8px 10px", borderRadius:4, fontSize:12, marginBottom:10 }}>{error}</div>}
+            <button type="submit" className="rlm-btn rlm-btn-primary" style={{ width:"100%", justifyContent:"center", padding:"10px" }} disabled={busy}>{busy ? "Please wait…" : mode==="signup" ? "Create admin account" : "Sign in as Admin"}</button>
+            <div style={{ display:"flex", justifyContent:"center", marginTop:10 }}>
+              <button type="button" className="rlm-btn rlm-btn-ghost" style={{ fontSize:12, padding:"6px 10px" }} onClick={()=>{ setMode(mode==="signup"?"signin":"signup"); setError(""); }}>{mode==="signup" ? "Have an account? Sign in" : "Need an account? Sign up"}</button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={submitRenter}>
+            <div className="rlm-field"><label className="rlm-label">Phone number (as registered with admin)</label><input className="rlm-input" type="tel" required value={phone} onChange={e=>setPhone(e.target.value)} placeholder="09xx xxx xxxx" autoComplete="tel" /></div>
+            <div className="rlm-field"><label className="rlm-label">Password</label><input className="rlm-input" type="password" required value={renterPass} onChange={e=>setRenterPass(e.target.value)} placeholder="Create or enter password (≥6 chars)" /></div>
+            {error && <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", color:"var(--rust)", padding:"8px 10px", borderRadius:4, fontSize:12, marginBottom:10 }}>{error}</div>}
+            <button type="submit" className="rlm-btn rlm-btn-primary" style={{ width:"100%", justifyContent:"center", padding:"10px" }} disabled={busy}>{busy ? "Please wait…" : mode==="signup" ? "Create renter account" : "Sign in as Renter"}</button>
+            <div style={{ display:"flex", justifyContent:"center", marginTop:10 }}>
+              <button type="button" className="rlm-btn rlm-btn-ghost" style={{ fontSize:12, padding:"6px 10px" }} onClick={()=>{ setMode(mode==="signup"?"signin":"signup"); setError(""); }}>{mode==="signup" ? "Have an account? Sign in" : "New renter? Create account"}</button>
+            </div>
+            <div style={{ fontSize:11, color:"#5b6663", textAlign:"center", marginTop:8 }}>Phone must match the Contact number admin saved for you in Tenants. You’ll then see your ID, contract, and payment history including advance/deposit.</div>
+          </form>
+        )}
+        <div style={{ fontSize:11, color:"#5b6663", textAlign:"center", marginTop:12 }}>Admin sees all tenants & yearly income. Renters see only their own rental info.</div>
+      </div>
     </div>
   );
 }
