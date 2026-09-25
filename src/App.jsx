@@ -25,7 +25,8 @@ function todayISO() { return toISODate(new Date()); }
 function formatDate(iso) {
   if (!iso) return "—";
   const d = new Date(iso + "T00:00:00");
-  return `${MONTHS[d.getMonth()].slice(0, 3)} ${d.getDate()}, ${d.getFullYear()}`;
+  const m = MONTHS[d.getMonth()];
+  return `${m ? m.slice(0, 3) : "—"} ${d.getDate()}, ${d.getFullYear()}`;
 }
 function formatMoney(amount, currency) {
   const n = Number(amount) || 0;
@@ -1633,7 +1634,7 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
   const [method, setMethod] = useState("Cash");
   useEffect(() => {
     if (selectedTenant && activePeriod) {
-      const base = `OR-${activePeriod.key}-${selectedTenant.id.slice(0,4).toUpperCase()}`;
+      const base = `OR-${activePeriod.key}-${String(selectedTenant.id||"").slice(0,4).toUpperCase()}`;
       setOrNo(base);
     }
   }, [selectedTenant?.id, activePeriod?.key]);
