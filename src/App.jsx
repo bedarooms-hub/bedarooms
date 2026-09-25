@@ -256,18 +256,39 @@ function useSWUpdate() {
   return { needRefresh, offlineReady, reload, dismiss: () => { setNeedRefresh(false); setOfflineReady(false); } };
 }
 
+const ADMIN_EMAIL = "bedakaheart@gmail.com";
+const ADMIN_PASS = "202477";
+const ADMIN_KEY = "rlm:admin-auth";
+
 function useSupabaseAuth() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const cloudEnabled = typeof window !== "undefined" && window.storage?.isCloudEnabled;
   useEffect(() => {
+    // local admin fallback (hardcoded gate)
+    const localAdmin = (()=>{ try{ return localStorage.getItem(ADMIN_KEY); }catch{return null}})();
+    if (localAdmin === ADMIN_EMAIL) {
+      setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
+      setAuthLoading(false);
+      return;
+    }
     if (!cloudEnabled) { setAuthLoading(false); return; }
     let mounted = true;
-    window.storage.getSession().then(s => { if (mounted) { setSession(s); setAuthLoading(false); } });
+    window.storage.getSession().then(s => {
+      if (!mounted) return;
+      if (s) setSession(s);
+      else {
+        // also check local admin after cloud check
+        const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
+        if (la === ADMIN_EMAIL) setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
+      }
+      setAuthLoading(false);
+    });
     const unsub = window.storage.onAuthStateChange((s) => { if (mounted) setSession(s); });
     return () => { mounted = false; unsub?.(); };
   }, [cloudEnabled]);
-  return { session, authLoading, cloudEnabled };
+  const clearAdmin = () => { try{ localStorage.removeItem(ADMIN_KEY);}catch{}; setSession(null); };
+  return { session, authLoading, cloudEnabled, clearAdmin };
 }
 
 function AuthPanel({ session, showToast }) {
@@ -286,7 +307,7 @@ function AuthPanel({ session, showToast }) {
     return (
       <div style={{ background:"#E8F5E9", border:"1px solid #A5D6A7", borderRadius:6, padding:12, marginBottom:16, fontSize:13, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
         <span>Cloud: <strong>{session.user.email}</strong> — synced ✓ ({session.user.id.slice(0,8)}…)</span>
-        <button className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={async()=>{ await window.storage.signOut(); showToast("Signed out — now local only"); }}><LogOut size={14}/> Sign out</button>
+        <button className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={async()=>{ await window.storage.signOut(); showToast("Signed out"); }}><LogOut size={14}/> Sign out</button>
       </div>
     );
   }
@@ -316,6 +337,57 @@ function AuthPanel({ session, showToast }) {
         <button className="rlm-btn rlm-btn-ghost" onClick={()=>setMode(mode==="signup"?"signin":"signup")}>{mode==="signup"?"Have account? Sign in":"Need account? Sign up"}</button>
       </div>
       <div style={{ fontSize:11, color:"#5b6663", marginTop:8 }}>Data syncs to <code>rental_data</code> table (RLS per user). Offline still works — localStorage is mirrored.</div>
+    </div>
+  );
+}
+
+function LoginGate({ session, showToast }) {
+  const [email, setEmail] = useState(ADMIN_EMAIL);
+  const [password, setPassword] = useState("");
+  const [mode, setMode] = useState("signin");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const cloudEnabled = window.storage?.isCloudEnabled;
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (!email || !password) { setError("Enter email and password"); return; }
+    // Hardcoded admin bypass — works even if Supabase email not confirmed
+    if (email === ADMIN_EMAIL && password === ADMIN_PASS) {
+      try { localStorage.setItem(ADMIN_KEY, ADMIN_EMAIL); } catch {}
+      // Try Supabase sign-in in background, but don't block gate
+      if (cloudEnabled) window.storage.signIn(email, password).catch(()=>{});
+      showToast("Admin access granted");
+      window.location.reload();
+      return;
+    }
+    setBusy(true); setError("");
+    try {
+      if (mode === "signup") {
+        await window.storage.signUp(email, password);
+        showToast("Account created — check email to confirm, then sign in (or disable Confirm email in Supabase Auth settings)");
+        setMode("signin");
+      } else {
+        await window.storage.signIn(email, password);
+        showToast("Welcome back — loading your data…");
+      }
+    } catch (err) { setError(err.message || "Auth failed"); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div style={{ minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#EFEDE3", padding:20, fontFamily:"var(--font-body, sans-serif)" }}>
+      <form onSubmit={submit} style={{ background:"white", border:"1px solid var(--line)", borderRadius:10, padding:24, maxWidth:380, width:"100%", boxShadow:"0 8px 30px rgba(0,0,0,0.08)" }}>
+        <div style={{ fontFamily:"var(--font-display)", fontSize:22, fontWeight:700, color:"#1B2A28" }}>BeDa Rooms</div>
+        <div style={{ fontSize:13, color:"#5b6663", marginBottom:16 }}>Sign in to access your rental manager. {cloudEnabled ? "Cloud-synced & PWA offline-ready." : "Set VITE_SUPABASE_* in .env to enable cloud."}</div>
+        {!cloudEnabled && <div style={{ background:"#FFF3CD", border:"1px solid #FFE69C", borderRadius:6, padding:10, fontSize:12, marginBottom:12 }}>Supabase not configured — login will not persist. Add <code>.env</code> and redeploy.</div>}
+        <div className="rlm-field"><label className="rlm-label">Email</label><input className="rlm-input" type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" /></div>
+        <div className="rlm-field"><label className="rlm-label">Password</label><input className="rlm-input" type="password" required value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" autoComplete={mode==="signin"?"current-password":"new-password"} /></div>
+        {error && <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", color:"var(--rust)", padding:"8px 10px", borderRadius:4, fontSize:12, marginBottom:10 }}>{error}</div>}
+        <button type="submit" className="rlm-btn rlm-btn-primary" style={{ width:"100%", justifyContent:"center", padding:"10px" }} disabled={busy}>{busy ? "Please wait…" : mode==="signup" ? "Create account" : "Sign in"}</button>
+        <div style={{ display:"flex", justifyContent:"center", marginTop:10 }}>
+          <button type="button" className="rlm-btn rlm-btn-ghost" style={{ fontSize:12, padding:"6px 10px" }} onClick={()=>{ setMode(mode==="signup"?"signin":"signup"); setError(""); }}>{mode==="signup" ? "Have an account? Sign in" : "Need an account? Sign up"}</button>
+        </div>
+        <div style={{ fontSize:11, color:"#5b6663", textAlign:"center", marginTop:10 }}>No one can open the app without signing in. Data is RLS-isolated per user.</div>
+      </form>
     </div>
   );
 }
@@ -350,7 +422,7 @@ export default function RoomRentalManager() {
   const online = useOnline();
   const pwa = usePWA();
   const sw = useSWUpdate();
-  const { session, cloudEnabled } = useSupabaseAuth();
+  const { session, authLoading, cloudEnabled, clearAdmin } = useSupabaseAuth();
   const [tab, setTab] = useState(() => {
     const hash = (typeof location !== "undefined" && location.hash.replace("#","")) || "";
     const ls = (()=>{ try{ return localStorage.getItem(TAB_KEY);}catch{return null}})();
@@ -596,6 +668,20 @@ export default function RoomRentalManager() {
     { id: "settings", label: "Settings", Icon: SettingsIcon },
   ];
 
+  // Auth gate — nobody can open the PWA without signing in when cloud is enabled
+  if (cloudEnabled && authLoading) {
+    return (
+      <div style={{ minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#EFEDE3", fontFamily:"sans-serif", color:"#1B2A28", flexDirection:"column", gap:12 }}>
+        <div style={{ width:32, height:32, border:"3px solid #C9C3B0", borderTopColor:"#1B2A28", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
+        <div>Checking login…</div>
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    );
+  }
+  if (cloudEnabled && !session) {
+    return <LoginGate session={session} showToast={showToast} />;
+  }
+
   return (
     <div className="rlm-app">
       {/* Topbar for mobile */}
@@ -605,9 +691,11 @@ export default function RoomRentalManager() {
           <span style={{ fontFamily:"var(--font-display)", fontWeight:600 }}>BeDa Rooms</span>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          {!online && <span style={{ fontSize:11, background:"rgba(255,255,255,0.15)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4 }}><WifiOff size={12}/> Offline</span>}
-          {pwa.canInstall && <button onClick={pwa.prompt} style={{ background:"var(--brass)", color:"white", border:"none" }}><Smartphone size={14}/> Install</button>}
-        </div>
+           {session?.user && <span style={{ fontSize:11, background:"rgba(255,255,255,0.15)", padding:"4px 8px", borderRadius:4 }} title={session.user.email}>{session.user.email.split("@")[0]}</span>}
+           {!online && <span style={{ fontSize:11, background:"rgba(255,255,255,0.15)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4 }}><WifiOff size={12}/> Offline</span>}
+           {pwa.canInstall && <button onClick={pwa.prompt} style={{ background:"var(--brass)", color:"white", border:"none" }}><Smartphone size={14}/> Install</button>}
+           {session?.user && <button onClick={async()=>{ try{ localStorage.removeItem(ADMIN_KEY);}catch{}; await window.storage.signOut(); clearAdmin?.(); showToast("Signed out"); window.location.reload(); }} style={{ background:"rgba(255,255,255,0.12)", color:"white", border:"1px solid rgba(255,255,255,0.2)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4 }}><LogOut size={12}/> Sign out</button>}
+         </div>
       </div>
 
       {/* Sidebar */}
