@@ -68,7 +68,20 @@ window.storage = {
     // Cloud path only for the main rental-data key when logged in
     if (key === CLOUD_KEY && isSupabaseConfigured) {
       const cloud = await cloudGet();
+      const localRaw = (()=>{ try{ return localStorage.getItem(fullKey(key, shared)); }catch{return null}})();
       if (cloud) {
+        // Auto-migrate: if cloud is empty default and local has data, push local to cloud instead of clobbering
+        try {
+          const cloudParsed = JSON.parse(cloud.value);
+          const localParsed = localRaw ? JSON.parse(localRaw) : null;
+          const cloudEmpty = !cloudParsed.tenants?.length && !Object.keys(cloudParsed.payments || {}).length;
+          const localHasData = localParsed && (localParsed.tenants?.length || Object.keys(localParsed.payments || {}).length);
+          if (cloudEmpty && localHasData) {
+            console.log("[storage] migrating local data to cloud...");
+            await cloudSet(localRaw);
+            return { key, value: localRaw, shared };
+          }
+        } catch {}
         // Mirror to localStorage for offline access
         try { localStorage.setItem(fullKey(key, shared), cloud.value); } catch {}
         return cloud;
