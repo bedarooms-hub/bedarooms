@@ -338,7 +338,7 @@ function AuthPanel({ session, showToast }) {
   if (session?.user) {
     return (
       <div style={{ background:"#E8F5E9", border:"1px solid #A5D6A7", borderRadius:6, padding:12, marginBottom:16, fontSize:13, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
-        <span>Cloud: <strong>{session.user.email}</strong> — synced ✓ ({session.user.id.slice(0,8)}…)</span>
+        <span>Cloud: <strong>{session.user.email}</strong> — synced ✓ ({String(session.user.id||"").slice(0,8)}…)</span>
         <button className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={async()=>{ await window.storage.signOut(); showToast("Signed out"); }}><LogOut size={14}/> Sign out</button>
       </div>
     );
@@ -1561,7 +1561,7 @@ function InvoiceTab({ tenants, payments, settings, selectedTenant, selectedTenan
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid var(--ink)", paddingBottom: 16, marginBottom: 20 }}>
                   <div>
                     <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700 }}>INVOICE</div>
-                    <div className="rlm-mono" style={{ fontSize: 12, color: "#5b6663" }}>No. {selectedTenant.id.toUpperCase().slice(0, 6)}-{activePeriod.key}</div>
+                    <div className="rlm-mono" style={{ fontSize: 12, color: "#5b6663" }}>No. {String(selectedTenant.id||"").toUpperCase().slice(0, 6)}-{activePeriod.key}</div>
                     <div className="rlm-mono" style={{ fontSize: 11, color:"#5b6663" }}>{formatDate(todayISO())}</div>
                   </div>
                   <StatusStamp status={info.status} />
