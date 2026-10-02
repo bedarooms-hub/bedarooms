@@ -228,6 +228,47 @@ function depositSummary(tenant, currency) {
   return parts.join(" + ");
 }
 function halfLabel(half) { return half === "a" ? "15th" : half === "b" ? "30th" : ""; }
+// Stable stringify (sorted keys) for comparing snapshots regardless of key order
+function stableStringify(o) {
+  if (Array.isArray(o)) return `[${o.map(stableStringify).join(",")}]`;
+  if (o && typeof o === "object") return `{${Object.keys(o).sort().map(k => JSON.stringify(k) + ":" + stableStringify(o[k])).join(",")}}`;
+  const s = JSON.stringify(o);
+  return s === undefined ? "null" : s;
+}
+// Merge cloud + local snapshots so neither side destroys the other on load.
+// Tenants: union by id (local wins conflicts — it's the device just used).
+// Payments: union by tenant+period (a Paid record always wins). Settings: merged.
+function mergeRentalData(cloud, local) {
+  const c = cloud && typeof cloud === "object" ? cloud : null;
+  const l = local && typeof local === "object" ? local : null;
+  if (!c) return l;
+  if (!l) return c;
+  const map = new Map();
+  (c.tenants || []).forEach(t => { if (t && t.id) map.set(t.id, t); });
+  (l.tenants || []).forEach(t => { if (t && t.id) map.set(t.id, t); });
+  const pay = {};
+  const tids = new Set([...Object.keys(c.payments || {}), ...Object.keys(l.payments || {})]);
+  tids.forEach(tid => {
+    const cp = (c.payments || {})[tid] || {};
+    const lp = (l.payments || {})[tid] || {};
+    const keys = new Set([...Object.keys(cp), ...Object.keys(lp)]);
+    const m = {};
+    keys.forEach(k => {
+      const a = cp[k], b = lp[k];
+      if (!a) m[k] = b;
+      else if (!b) m[k] = a;
+      else if (b && b.status === "paid" && a.status !== "paid") m[k] = b;
+      else if (a && a.status === "paid" && b.status !== "paid") m[k] = a;
+      else m[k] = b;
+    });
+    if (Object.keys(m).length) pay[tid] = m;
+  });
+  const settings = { ...(l.settings || {}) };
+  Object.entries(c.settings || {}).forEach(([k, v]) => {
+    if (v !== "" && v !== undefined && v !== null) settings[k] = v;
+  });
+  return { tenants: [...map.values()], payments: pay, settings };
+}
 const LATE_RATE_PER_DAY = 0.01; // 1% per day overdue (monthly schedule only)
 // Full calendar days past the due date (due date itself = 0). Time-of-day ignored.
 function daysOverdue(dueDate, asOf = new Date()) {
@@ -1030,17 +1071,31 @@ export default function RoomRentalManager() {
     window.addEventListener("hashchange", onHash); return ()=>window.removeEventListener("hashchange", onHash);
   },[]);
 
-  // Load from cloud if logged in, else localStorage. Re-run on auth change.
+  // Load with cloud+local MERGE (never overwrite): snapshot local first (storage.get
+  // mirrors cloud over local), then union both and silently heal cloud/local if diverged.
+  // Re-run on auth change.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
+        const localRaw = (() => { try { return localStorage.getItem(`rlm:user:${STORAGE_KEY}`); } catch { return null; } })();
         const res = await window.storage.get(STORAGE_KEY);
         if (cancelled) return;
-        if (res && res.value) {
-          const parsed = JSON.parse(res.value);
-          setData({ tenants: parsed.tenants || [], payments: parsed.payments || {}, settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) } });
+        let cloudParsed = null;
+        let localParsed = null;
+        try { cloudParsed = res && res.value ? JSON.parse(res.value) : null; } catch { cloudParsed = null; }
+        try { localParsed = localRaw ? JSON.parse(localRaw) : null; } catch { localParsed = null; }
+        const merged = mergeRentalData(cloudParsed, localParsed);
+        if (merged) {
+          const next = { tenants: merged.tenants || [], payments: merged.payments || {}, settings: { ...DEFAULT_SETTINGS, ...(merged.settings || {}) } };
+          setData(next);
+          // heal divergence (e.g. saved offline, stale cloud): write merged back silently
+          try {
+            if (stableStringify(next) !== stableStringify(cloudParsed) || stableStringify(next) !== stableStringify(localParsed)) {
+              await window.storage.set(STORAGE_KEY, JSON.stringify(next));
+            }
+          } catch {}
         } else {
           setData({ tenants: [], payments: {}, settings: { ...DEFAULT_SETTINGS } });
         }
@@ -2099,9 +2154,32 @@ function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, 
   );
 }
 
+function dayOfISO(iso) {
+  const d = Number(String(iso || "").slice(8, 10));
+  return d >= 1 && d <= 31 ? d : 1;
+}
+
 function TenantForm({ initial, tenants = [], onSave, onCancel }) {
-  const [form, setForm] = useState(initial || { name: "", room: "", idType: "", idNumber: "", idImagePath: "", email: "", address: "", contact: "", monthlyRent: "", dueDay: 1, moveInDate: todayISO(), additionalFees: [], submeters: [], depositType: "none", advanceAmount: "", depositAmount: "", depositNotes: "", paymentFrequency: "monthly" });
+  const [form, setForm] = useState(() => {
+    if (initial) {
+      const d = dayOfISO(initial.moveInDate);
+      // legacy records defaulted to dueDay 1 — re-anchor to move-in day unless admin set otherwise
+      const due = Number(initial.dueDay) === 1 && d !== 1 ? d : (Number(initial.dueDay) || d);
+      return { ...initial, dueDay: due };
+    }
+    const mi = todayISO();
+    return { name: "", room: "", idType: "", idNumber: "", idImagePath: "", email: "", address: "", contact: "", monthlyRent: "", dueDay: dayOfISO(mi), moveInDate: mi, additionalFees: [], submeters: [], depositType: "none", advanceAmount: "", depositAmount: "", depositNotes: "", paymentFrequency: "monthly" };
+  });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  // tracks whether admin manually chose a due day (otherwise it follows the move-in day);
+  // a legacy default of 1 counts as untouched, so old records re-anchor on next edit
+  const [dueTouched, setDueTouched] = useState(() => {
+    if (!initial || initial.dueDay == null || initial.dueDay === "") return false;
+    const d = dayOfISO(initial.moveInDate);
+    const n = Number(initial.dueDay);
+    if (n === 1 && d !== 1) return false;
+    return n !== d;
+  });
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const previewUrl = useIdImageUrl(form.idImagePath || "");
@@ -2226,7 +2304,7 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
         <div className="rlm-field"><label className="rlm-label">Monthly rent (total) *</label><input className="rlm-input" type="number" min="0" step="0.01" value={form.monthlyRent} onChange={e => set("monthlyRent", e.target.value)} placeholder="e.g. 4500" required />
           {form.monthlyRent !== "" && rentNum <=0 && <span style={{ fontSize:11, color:"var(--rust)" }}>Rent must be greater than 0</span>}
         </div>
-        <div className="rlm-field"><label className="rlm-label">Move-in date *</label><input className="rlm-input" type="date" value={form.moveInDate} onChange={e => set("moveInDate", e.target.value)} required /></div>
+        <div className="rlm-field"><label className="rlm-label">Move-in date * (rent starts here)</label><input className="rlm-input" type="date" value={form.moveInDate} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, moveInDate: v, dueDay: dueTouched ? f.dueDay : dayOfISO(v) })); }} required /></div>
         <div className="rlm-field">
           <label className="rlm-label">Payment schedule</label>
           <select className="rlm-select" value={paymentFrequency} onChange={e => set("paymentFrequency", e.target.value)}>
@@ -2235,8 +2313,9 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
           </select>
         </div>
         {!semi && (
-          <div className="rlm-field"><label className="rlm-label">Due day of month *</label><input className="rlm-input" type="number" min="1" max="31" value={form.dueDay} onChange={e => set("dueDay", e.target.value)} />
+          <div className="rlm-field"><label className="rlm-label">Due day of month *</label><input className="rlm-input" type="number" min="1" max="31" value={form.dueDay} onChange={e => { setDueTouched(true); set("dueDay", e.target.value); }} />
             {!dueDayValid && <span style={{ fontSize:11, color:"var(--rust)" }}>Must be 1–31</span>}
+            {dueDayValid && !dueTouched && <span style={{ fontSize:11, color:"#5b6663" }}>Auto-set from move-in day ({form.moveInDate ? `due every ${ordinal(dayOfISO(form.moveInDate))}` : ""}) — change only if rent is due on a different day.</span>}
           </div>
         )}
       </div>
