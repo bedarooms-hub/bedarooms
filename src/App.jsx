@@ -314,7 +314,7 @@ function useSupabaseAuth() {
   const [authLoading, setAuthLoading] = useState(true);
   const cloudEnabled = typeof window !== "undefined" && window.storage?.isCloudEnabled;
   useEffect(() => {
-    // hardcoded gates take priority (fixes admin 202477 not working after renter session)
+    // hardcoded gates take priority (fixes admin offline login not working after renter session)
     const localAdmin = (()=>{ try{ return localStorage.getItem(ADMIN_KEY); }catch{return null}})();
     if (localAdmin === ADMIN_EMAIL) {
       setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
@@ -348,7 +348,7 @@ function useSupabaseAuth() {
         if (la === ADMIN_EMAIL) return;
         setSession(s);
       } else {
-        // signed out in cloud -> clear stale gates BUT preserve hardcoded admin (202477 offline login)
+        // signed out in cloud -> clear stale gates BUT preserve hardcoded admin (offline login)
         const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
         if (la === ADMIN_EMAIL) return;
         try { localStorage.removeItem(RENTER_KEY); } catch {}
