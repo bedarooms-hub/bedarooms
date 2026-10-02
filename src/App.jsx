@@ -352,7 +352,14 @@ const ADMIN_KEY = "rlm:admin-auth";
 const RENTER_KEY = "rlm:renter-auth";
 function phoneToEmail(phone){ const d=String(phone).replace(/\D/g,""); return `r${d}@renter.beda-rooms.local`; }
 function isAdminSession(s){ return s?.user?.email===ADMIN_EMAIL || s?.user?.id==="admin-local"; }
-function isRenterSession(s){ return s?.user?.email?.endsWith("@renter.beda-rooms.local") || s?.user?.id==="renter-local"; }
+function isRenterAccount(user) {
+  if (!user) return false;
+  if (user.id === "renter-local") return true;
+  if (user.user_metadata?.role === "renter") return true;
+  // legacy phone-based accounts: r{digits}@renter.beda-rooms.local
+  return String(user.email || "").endsWith("@renter.beda-rooms.local");
+}
+function isRenterSession(s){ return isRenterAccount(s?.user); }
 
 function useSupabaseAuth() {
   const [session, setSession] = useState(null);
@@ -367,8 +374,9 @@ function useSupabaseAuth() {
       return;
     }
     const localRenter = (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"null"); }catch{return null}})();
-    if (localRenter?.phone) {
-      setSession({ user: { email: phoneToEmail(localRenter.phone), id: "renter-local", phone: localRenter.phone } });
+    if (localRenter?.phone || localRenter?.email) {
+      const em = localRenter.email || (localRenter.phone ? phoneToEmail(localRenter.phone) : "");
+      setSession({ user: { email: em, id: "renter-local", phone: localRenter.phone || "", user_metadata: { role: "renter", phone: localRenter.phone || "" } } });
       setAuthLoading(false);
       return;
     }
@@ -377,7 +385,7 @@ function useSupabaseAuth() {
     window.storage.getSession().then(s => {
       if (!mounted) return;
       if (s) {
-        if (s.user?.email?.endsWith("@renter.beda-rooms.local") && s.user?.user_metadata?.phone) s.user.phone = s.user.user_metadata.phone;
+        if (s.user?.user_metadata?.phone && !s.user.phone) s.user.phone = s.user.user_metadata.phone;
         setSession(s);
       } else {
         setSession(null);
@@ -386,7 +394,7 @@ function useSupabaseAuth() {
     });
     const unsub = window.storage.onAuthStateChange((s) => {
       if (!mounted) return;
-      if (s?.user?.email?.endsWith("@renter.beda-rooms.local") && s.user?.user_metadata?.phone) s.user.phone = s.user.user_metadata.phone;
+      if (s?.user?.user_metadata?.phone && !s.user.phone) s.user.phone = s.user.user_metadata.phone;
       if (s) {
         // if admin gate was set, keep it (admin bypass)
         const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
@@ -625,11 +633,18 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
     }) || null;
     try {
       if (mode === "signup") {
+        // email + phone must match the tenant record admin saved (prevents orphan accounts)
+        const matched = findTenantRecord(rEmail, p);
+        if (tenants.length > 0 && !matched) {
+          setError("No tenant record found with this email/phone — ask admin to save your email and phone under your tenant account first, then create your login.");
+          setBusy(false);
+          return;
+        }
         let cloudOk = false;
         let cloudErr = null;
         if (cloudEnabled && supabase) {
           try {
-            const { error } = await supabase.auth.signUp({ email: rEmail, password: pPass, options: { data: { phone: p } } });
+            const { error } = await supabase.auth.signUp({ email: rEmail, password: pPass, options: { data: { phone: p, role: "renter" } } });
             if (error) throw error;
             cloudOk = true;
           } catch (err) { cloudErr = err; }
@@ -637,23 +652,34 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
           try { await window.storage.signUp(rEmail, pPass); cloudOk = true; } catch (err) { cloudErr = err; }
         }
         if (cloudOk) {
-          showToast("Renter account created — you can now sign in with your phone");
+          showToast("Renter account created — you can now sign in with your email or phone");
           // store local copy for offline fallback too
-          setLocalCred(rEmail, pPass);
+          setLocalCred(rEmail, pPass, p);
+          try { localStorage.setItem(RENTER_KEY, JSON.stringify({ email: rEmail, phone: p })); } catch {}
+          // link the login email onto the tenant record if admin only saved the phone
+          if (matched && !matched.email && saveTenant) {
+            try { await saveTenant({ ...matched, email: rEmail }, { silent: true }); } catch {}
+          }
           setMode("signin");
+          setRenterId(rEmail);
+          setRenterEmail("");
+          setPhone("");
+          setRenterPass("");
           return;
         }
         // cloud failed — check if it's network/key error → fallback to local offline account
         const msg = cloudErr?.message || "";
         if (isNetworkError(msg) || isKeyError(msg)) {
           // create local offline renter account so login still works for demo/offline
-          setLocalCred(rEmail, pPass);
+          setLocalCred(rEmail, pPass, p);
+          try { localStorage.setItem(RENTER_KEY, JSON.stringify({ email: rEmail, phone: p })); } catch {}
           showToast("Renter account created locally (Supabase offline: " + (isKeyError(msg) ? "Invalid API key — fix .env anon key" : "Failed to fetch") + "). You can sign in now — data will sync when Supabase is fixed. Fix: copy correct anon key from Dashboard → Settings → API.");
           setMode("signin");
+          setRenterId(rEmail);
           return;
         }
         if (String(msg).toLowerCase().includes("user already registered") || String(msg).toLowerCase().includes("already registered") || String(msg).toLowerCase().includes("already exists")) {
-          setError("This phone already has an account — tap 'Have an account? Sign in' and enter your password. If you forgot password, ask admin to reset in Supabase Dashboard → Auth → Users.");
+          setError("This email already has an account — tap 'Have an account? Sign in' and enter your password. If you forgot your password, ask admin to reset it in Supabase Dashboard → Auth → Users.");
           return;
         }
         if (String(msg).toLowerCase().includes("email not confirmed")) {
@@ -662,81 +688,60 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
         }
         throw cloudErr;
       } else {
-        // signin
+        // signin with email or phone
         let cloudOk = false;
         let cloudErr = null;
+        let metaPhone = "";
         if (cloudEnabled && supabase) {
           try {
-            const { error } = await supabase.auth.signInWithPassword({ email: rEmail, password: pPass });
+            const { data, error } = await supabase.auth.signInWithPassword({ email: rEmail, password: pPass });
             if (error) throw error;
+            metaPhone = String(data?.user?.user_metadata?.phone || "").replace(/\D/g,"");
             cloudOk = true;
           } catch (err) { cloudErr = err; }
         } else {
           try { await window.storage.signIn(rEmail, pPass); cloudOk = true; } catch (err) { cloudErr = err; }
         }
+        const localRec = getLocalRec(rEmail);
+        const tenantRec = findTenantRecord(rEmail, p);
+        const tenantPhone = tenantRec ? String(tenantRec.contact || "").replace(/\D/g,"") : "";
+        const resolvedPhone = metaPhone || tenantPhone || localRec?.phone || p;
         if (cloudOk) {
           try {
             localStorage.removeItem(ADMIN_KEY);
-            localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p }));
+            localStorage.setItem(RENTER_KEY, JSON.stringify({ email: rEmail, phone: resolvedPhone }));
           } catch {}
-          setLocalCred(rEmail, pPass);
-          // Auto-create tenant record so renter can access their own data after login
-          if (saveTenant) {
-            const tenant = {
-              id: uid(),
-              name: "",
-              contact: p,
-              room: "",
-              roomLabel: "",
-              idNumber: "",
-              address: "",
-              monthlyRent: 0,
-              dueDay: 1,
-              moveInDate: todayISO(),
-              paymentFrequency: "monthly",
-              depositType: "none",
-              advanceAmount: 0,
-              depositAmount: 0,
-              depositNotes: "",
-              additionalFees: [],
-              submeters: [],
-            };
-            try { await saveTenant(tenant); } catch {}
+          setLocalCred(rEmail, pPass, resolvedPhone);
+          // link the login email onto the tenant record if admin only saved the phone
+          if (tenantRec && !tenantRec.email && saveTenant) {
+            try { await saveTenant({ ...tenantRec, email: rEmail }, { silent: true }); } catch {}
           }
-          showToast("Welcome — your account is set up. Please fill in your details (name, room) in Tenants.");
+          showToast(resolvedPhone ? "Welcome back — loading your rental…" : "Signed in — ask admin to save your phone under your tenant record to see your rental.");
           window.location.reload();
           return;
         }
         const msg = cloudErr?.message || "";
         // offline fallback: check local creds
         if ((isNetworkError(msg) || isKeyError(msg) || String(msg).toLowerCase().includes("invalid login")) && checkLocalCred(rEmail, pPass)) {
+          const offPhone = localRec?.phone || tenantPhone || p;
+          if (!offPhone) {
+            setError("Signed in offline, but no phone is linked — go online once so your rental record can be linked, or ask admin to save your phone under your tenant account.");
+            return;
+          }
           try {
             localStorage.removeItem(ADMIN_KEY);
-            localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p }));
+            localStorage.setItem(RENTER_KEY, JSON.stringify({ email: rEmail, phone: offPhone }));
           } catch {}
-          // Auto-create tenant for offline/local sign-in
-          if (saveTenant) {
-            const tenant = { id: uid(), name: "", contact: p, room: "", roomLabel: "", idNumber: "", address: "", monthlyRent: 0, dueDay: 1, moveInDate: todayISO(), paymentFrequency: "monthly", depositType: "none", advanceAmount: 0, depositAmount: 0, depositNotes: "", additionalFees: [], submeters: [] };
-            try { await saveTenant(tenant); } catch {}
-          }
           showToast("Signed in locally (Supabase " + (isKeyError(msg) ? "Invalid API key — fix .env" : "offline") + ") — your rental data is from local cache. Fix Supabase for cloud sync.");
           window.location.reload();
           return;
         }
-        // also allow offline signin even if no local cred yet but phone matches a tenant contact (demo convenience)
-        // — but require password check if we have stored creds
-        if (isNetworkError(msg) || isKeyError(msg)) {
-          // no stored cred → create ephemeral session for demo so renter can still view own data if admin data is in localStorage
-          // still require password length, but allow through with warning
+        // also allow offline signin even if no local cred yet but identifier matches a tenant record (demo convenience)
+        if ((isNetworkError(msg) || isKeyError(msg)) && tenantRec && tenantPhone) {
           try {
             localStorage.removeItem(ADMIN_KEY);
-            localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p }));
+            localStorage.setItem(RENTER_KEY, JSON.stringify({ email: rEmail, phone: tenantPhone }));
           } catch {}
-          // Auto-create tenant for offline/ephemeral session
-          if (saveTenant) {
-            const tenant = { id: uid(), name: "", contact: p, room: "", roomLabel: "", idNumber: "", address: "", monthlyRent: 0, dueDay: 1, moveInDate: todayISO(), paymentFrequency: "monthly", depositType: "none", advanceAmount: 0, depositAmount: 0, depositNotes: "", additionalFees: [], submeters: [] };
-            try { await saveTenant(tenant); } catch {}
-          }
           showToast("Signed in locally (Supabase offline). Fix .env anon key + restart dev for cloud sync.");
           window.location.reload();
           return;
@@ -746,7 +751,7 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
           return;
         }
         if (String(msg).toLowerCase().includes("invalid login") || String(msg).toLowerCase().includes("invalid credentials")) {
-          setError("Invalid phone or password — check your phone number (must match Contact saved by admin) and password. If you just created the account, wait for email confirmation or disable it in Supabase.");
+          setError("Invalid email/phone or password — check the email or phone admin saved for you and try again. New renter? Tap 'New renter? Create account'. If you just created the account, wait for email confirmation or disable it in Supabase.");
           return;
         }
         throw cloudErr;
@@ -755,12 +760,12 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
         const msg = err.message || "";
         const low = msg.toLowerCase();
         if (low.includes("failed to fetch") || low.includes("fetch") || low.includes("network")) {
-          setError("Failed to fetch — cannot reach Supabase. 1) Check VITE_SUPABASE_URL in .env matches Dashboard → Project Settings → API → Project URL (" + (import.meta.env.VITE_SUPABASE_URL || "missing") + "), 2) Check VITE_SUPABASE_ANON_KEY matches anon key there, 3) Restart dev server (npm run dev). Your project (screenshot) is mpyyiacudehygwwoobojx.");
+          setError("Failed to fetch — cannot reach Supabase. 1) Check VITE_SUPABASE_URL in .env matches Dashboard → Project Settings → API → Project URL (" + (import.meta.env.VITE_SUPABASE_URL || "missing") + "), 2) Check VITE_SUPABASE_ANON_KEY matches anon key there, 3) Restart dev server (npm run dev).");
         } else if (low.includes("invalid api key") || low.includes("api key")) {
-          setError("Invalid API key — .env URL/key mismatch. Your Project URL is https://mpyyiacudehygwwoobojx.supabase.co — copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server (npm run dev). Current anon key is for old ref mpyyiacudehxgwoobojx and will fail.");
+          setError("Invalid API key — .env URL/key mismatch. Copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server (npm run dev).");
         } else if (low.includes("email not confirmed")) {
           setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or manually confirm the user in Dashboard → Auth → Users.");
-        } else { setError(msg || "Phone login failed — ask admin to confirm your number is registered as tenant contact"); }
+        } else { setError(msg || "Renter login failed — ask admin to confirm your email/phone is saved under your tenant record"); }
       }
     finally { setBusy(false); }
   };
@@ -769,7 +774,7 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
     <div style={{ minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#EFEDE3", padding:20, fontFamily:"var(--font-body, sans-serif)" }}>
       <div style={{ background:"white", border:"1px solid var(--line)", borderRadius:10, padding:24, maxWidth:400, width:"100%", boxShadow:"0 8px 30px rgba(0,0,0,0.08)" }}>
         <div style={{ fontFamily:"var(--font-display)", fontSize:22, fontWeight:700, color:"#1B2A28" }}>BeDa Rooms</div>
-        <div style={{ fontSize:13, color:"#5b6663", marginBottom:12 }}>Choose how to sign in — Admin (owner) or Renter (phone).</div>
+        <div style={{ fontSize:13, color:"#5b6663", marginBottom:12 }}>Choose how to sign in — Admin (owner) or Renter (email).</div>
         <div style={{ display:"flex", gap:8, marginBottom:16 }}>
           <button onClick={()=>{ setTab("admin"); setError(""); }} className={tab==="admin" ? "rlm-btn rlm-btn-primary" : "rlm-btn rlm-btn-ghost"} style={{ flex:1, justifyContent:"center" }}>Admin</button>
           <button onClick={()=>{ setTab("renter"); setError(""); }} className={tab==="renter" ? "rlm-btn rlm-btn-primary" : "rlm-btn rlm-btn-ghost"} style={{ flex:1, justifyContent:"center" }}><Smartphone size={14}/> Renter</button>
@@ -801,14 +806,21 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
           </form>
         ) : (
           <form onSubmit={submitRenter}>
-            <div className="rlm-field"><label className="rlm-label">Phone number (as registered with admin)</label><input className="rlm-input" type="tel" required value={phone} onChange={e=>setPhone(e.target.value)} placeholder="09xx xxx xxxx" autoComplete="tel" /></div>
+            {mode === "signup" ? (
+              <>
+                <div className="rlm-field"><label className="rlm-label">Email address (as saved by admin)</label><input className="rlm-input" type="email" required value={renterEmail} onChange={e=>setRenterEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" /></div>
+                <div className="rlm-field"><label className="rlm-label">Phone number (as saved by admin)</label><input className="rlm-input" type="tel" required value={phone} onChange={e=>setPhone(e.target.value)} placeholder="09xx xxx xxxx" autoComplete="tel" /></div>
+              </>
+            ) : (
+              <div className="rlm-field"><label className="rlm-label">Email or phone number</label><input className="rlm-input" required value={renterId} onChange={e=>setRenterId(e.target.value)} placeholder="you@example.com or 09xx xxx xxxx" autoComplete="username" /></div>
+            )}
             <div className="rlm-field"><label className="rlm-label">Password</label><input className="rlm-input" type="password" required value={renterPass} onChange={e=>setRenterPass(e.target.value)} placeholder="Create or enter password (≥6 chars)" /></div>
             {error && <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", color:"var(--rust)", padding:"8px 10px", borderRadius:4, fontSize:12, marginBottom:10 }}>{error}</div>}
             <button type="submit" className="rlm-btn rlm-btn-primary" style={{ width:"100%", justifyContent:"center", padding:"10px" }} disabled={busy}>{busy ? "Please wait…" : mode==="signup" ? "Create renter account" : "Sign in as Renter"}</button>
             <div style={{ display:"flex", justifyContent:"center", marginTop:10 }}>
               <button type="button" className="rlm-btn rlm-btn-ghost" style={{ fontSize:12, padding:"6px 10px" }} onClick={()=>{ setMode(mode==="signup"?"signin":"signup"); setError(""); }}>{mode==="signup" ? "Have an account? Sign in" : "New renter? Create account"}</button>
             </div>
-            <div style={{ fontSize:11, color:"#5b6663", textAlign:"center", marginTop:8 }}>Phone must match the Contact number admin saved for you in Tenants. You’ll then see your ID, contract, and payment history including advance/deposit.</div>
+            <div style={{ fontSize:11, color:"#5b6663", textAlign:"center", marginTop:8 }}>Use the email admin saved under your tenant record — or your phone number. Your phone must match the Contact number admin saved for you in Tenants. You’ll then see your ID, contract, and payment history including advance/deposit.</div>
           </form>
         )}
         <div style={{ fontSize:11, color:"#5b6663", textAlign:"center", marginTop:12 }}>Admin sees all tenants & yearly income. Renters see only their own rental info.</div>
@@ -1244,7 +1256,7 @@ export default function RoomRentalManager() {
     );
   }
   if (!session) {
-    return <LoginGate session={session} showToast={showToast} saveTenant={saveTenant} />;
+    return <LoginGate session={session} showToast={showToast} saveTenant={saveTenant} tenants={tenants} />;
   }
   if (isRenterSession(session)) {
     if (loading) {
@@ -1257,10 +1269,15 @@ export default function RoomRentalManager() {
       );
     }
     const renterPhone = session?.user?.phone || null;
+    const renterEmail = String(session?.user?.email || "").trim().toLowerCase();
     const renterTenant = tenants.find(t => {
+      // match by login email (saved by admin) first, then by contact phone
+      const em = String(t.email || "").trim().toLowerCase();
+      if (renterEmail && em && em === renterEmail) return true;
       if (!renterPhone) return false;
       const c = String(t.contact||"").replace(/\D/g,"");
-      return c && c === renterPhone.replace(/\D/g,"");
+      const rp = String(renterPhone).replace(/\D/g,"");
+      return c && rp && (c === rp || c.slice(-10) === rp.slice(-10));
     }) || null;
     const renterPayments = renterTenant ? (payments[renterTenant.id] || {}) : {};
     const renterPaymentList = Object.entries(renterPayments).flatMap(([key, rec]) => ({

@@ -23,7 +23,7 @@ async function cloudGet() {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) return null;
-    const isRenter = session.user.email?.endsWith("@renter.beda-rooms.local");
+    const isRenter = session.user.user_metadata?.role === "renter" || session.user.email?.endsWith("@renter.beda-rooms.local");
     // renter should read admin's row (RLS policy rental_data renter read admin)
     let targetId = session.user.id;
     if (isRenter) {

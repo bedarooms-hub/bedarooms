@@ -69,15 +69,19 @@ drop policy if exists "rental_data self" on public.rental_data;
 create policy "rental_data self" on public.rental_data
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
--- Renters (r{phone}@renter.beda-rooms.local) can READ the admin's rental_data row
--- so they see their own tenant record, payments, and GCash/Maya numbers.
+-- Renters sign in with their own email (role='renter' in user_metadata, set at
+-- signup) or legacy r{phone}@renter.beda-rooms.local accounts. Either form can
+-- READ the admin's rental_data row so they see their own tenant record.
 -- Admin email is fixed: bedarooms@gmail.com — change it here if your owner email differs.
 drop policy if exists "rental_data renter read admin" on public.rental_data;
 create policy "rental_data renter read admin" on public.rental_data
   for select using (
     auth.uid() = user_id
     or (
-      (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+      (
+        (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+        or (auth.jwt() -> 'user_metadata' ->> 'role') = 'renter'
+      )
       and user_id = (select id from auth.users where email = 'bedarooms@gmail.com' limit 1)
     )
   );
@@ -111,7 +115,10 @@ drop policy if exists "renter-ids renter read own" on storage.objects;
 create policy "renter-ids renter read own" on storage.objects
   for select using (
     bucket_id = 'renter-ids'
-    and (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+    and (
+      (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+      or (auth.jwt() -> 'user_metadata' ->> 'role') = 'renter'
+    )
     and name like ((auth.jwt() -> 'user_metadata' ->> 'phone') || '/%')
   );
 
@@ -120,7 +127,10 @@ drop policy if exists "renter-ids renter insert own" on storage.objects;
 create policy "renter-ids renter insert own" on storage.objects
   for insert with check (
     bucket_id = 'renter-ids'
-    and (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+    and (
+      (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+      or (auth.jwt() -> 'user_metadata' ->> 'role') = 'renter'
+    )
     and name like ((auth.jwt() -> 'user_metadata' ->> 'phone') || '/%')
   );
 
@@ -131,9 +141,9 @@ create policy "renter-ids renter insert own" on storage.objects
 -- 5) contract_signatures — electronic signatures for the rental agreement
 -- One row per signing event. `image` holds a small canvas PNG dataURL.
 -- Admin signs in Contract tab; renter signs in their dashboard (or in person).
--- Renter (r{phone}@renter.beda-rooms.local) can INSERT as signer='tenant'
--- only for their own phone, and READ signatures tied to their phone
--- (so they can see the landlord's countersignature on their own contract).
+-- Renter (own email with role='renter' metadata, or legacy r{phone}@renter.beda-rooms.local)
+-- can INSERT as signer='tenant' only for their own phone, and READ signatures tied
+-- to their phone (so they can see the landlord's countersignature on their own contract).
 -- ============================================================
 create table if not exists public.contract_signatures (
   id uuid primary key default gen_random_uuid(),
@@ -164,7 +174,10 @@ create policy "contract_signatures admin all" on public.contract_signatures
 drop policy if exists "contract_signatures renter insert own" on public.contract_signatures;
 create policy "contract_signatures renter insert own" on public.contract_signatures
   for insert with check (
-    (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+    (
+      (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+      or (auth.jwt() -> 'user_metadata' ->> 'role') = 'renter'
+    )
     and signer = 'tenant'
     and phone = (auth.jwt() -> 'user_metadata' ->> 'phone')
   );
@@ -173,7 +186,10 @@ create policy "contract_signatures renter insert own" on public.contract_signatu
 drop policy if exists "contract_signatures renter read own" on public.contract_signatures;
 create policy "contract_signatures renter read own" on public.contract_signatures
   for select using (
-    (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+    (
+      (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+      or (auth.jwt() -> 'user_metadata' ->> 'role') = 'renter'
+    )
     and phone = (auth.jwt() -> 'user_metadata' ->> 'phone')
   );
 
