@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BeDa Rooms — Renter Information Form</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; background: #EFEDE3; color: #1B2A28; margin: 0; padding: 24px 16px; }
+  .sheet { max-width: 760px; margin: 0 auto; background: #fff; border: 1px solid #C9C3B0; border-radius: 10px; padding: 28px 28px 24px; }
+  h1 { font-size: 24px; margin: 0; }
+  .sub { color: #5b6663; font-size: 13px; margin: 6px 0 18px; }
+  .section { border-top: 2px solid #1B2A28; margin-top: 20px; padding-top: 14px; }
+  .section h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .05em; margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .full { grid-column: 1 / -1; }
+  label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+  label small { font-weight: 400; color: #5b6663; }
+  input, select, textarea { width: 100%; border: 1px solid #C9C3B0; border-radius: 6px; padding: 9px 10px; font-size: 14px; }
+  textarea { min-height: 56px; resize: vertical; }
+  .hint { font-size: 11px; color: #5b6663; margin-top: 3px; }
+  .check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin: 6px 0; }
+  .btnrow { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+  button { border: none; border-radius: 6px; padding: 11px 18px; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .primary { background: #1B2A28; color: #fff; }
+  .ghost { background: #F4F1E7; color: #1B2A28; border: 1px solid #C9C3B0; }
+  .note { background: #FFF8E1; border: 1px dashed #C9C3B0; border-radius: 6px; padding: 12px; font-size: 13px; margin-top: 16px; }
+  .sig { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 22px; }
+  .sig div { border-top: 1px solid #1B2A28; padding-top: 6px; font-size: 12px; }
+  @media (max-width: 600px) { .grid, .sig { grid-template-columns: 1fr; } }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .sheet { border: none; border-radius: 0; max-width: none; }
+    .btnrow, .noprint { display: none !important; }
+    input, select, textarea { border: none; border-bottom: 1px solid #999; border-radius: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>BeDa Rooms — Renter Information Form</h1>
+  <p class="sub">Please fill up completely and send back to the owner (photo/scan + picture of 1 valid ID). Your <strong>Contact Number</strong> below will be your login — use the same number when creating your Renter account.</p>
+
+  <form onsubmit="return false">
+  <div class="section">
+    <h2>A. Personal Information</h2>
+    <div class="grid">
+      <div class="full"><label>Full Name (Last, First, Middle) *</label><input placeholder="e.g. Dela Cruz, Juan A." /></div>
+      <div><label>Nickname / Preferred name</label><input /></div>
+      <div><label>Birthdate</label><input type="date" /></div>
+      <div><label>Contact Number (11 digits) * <small>— must match Renter login</small></label><input type="tel" placeholder="09xx xxx xxxx" /></div>
+      <div><label>Email <small>(optional)</small></label><input type="email" placeholder="you@email.com" /></div>
+      <div class="full"><label>Present Address (Barangay, City) *</label><input placeholder="Blk/Lot, Street, Barangay, City" /></div>
+      <div class="full"><label>Provincial / Permanent Address</label><input /></div>
+      <div><label>ID Type * <small>(Driver's, National ID, Passport, etc.)</small></label><input placeholder="e.g. National ID" /></div>
+      <div><label>ID Number *</label><input placeholder="As shown on ID" /></div>
+      <div><label>Civil Status</label><select><option>—</option><option>Single</option><option>Married</option><option>Widowed</option><option>Separated</option></select></div>
+      <div><label>Occupation / School</label><input placeholder="e.g. Student, Call center agent" /></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>B. Rental Details</h2>
+    <div class="grid">
+      <div><label>Room Requested *</label><select><option>— Select —</option><option>Room 1</option><option>Room 2</option><option>Room 3 (with aircon)</option><option>Room 4</option></select></div>
+      <div><label>Move-in Date *</label><input type="date" /></div>
+      <div><label>Length of Stay <small>(e.g. 6 months, 1 year)</small></label><input placeholder="e.g. 1 year" /></div>
+      <div><label>Payment Schedule *</label><select><option>Once a month</option><option>Twice a month (15th &amp; 30th)</option></select></div>
+      <div class="full"><label>Number of Occupants * <small>(names + relationship if more than 1)</small></label><textarea placeholder="1. Name — relationship"></textarea></div>
+      <div class="full"><label>Pets? If yes, what kind / how many</label><input placeholder="None / Cat (1), etc." /></div>
+      <div class="full"><label>Initial Submeter Reading <small>(owner to verify — Electricity / Water)</small></label><input placeholder="Owner fills on move-in" /></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>C. Emergency Contact</h2>
+    <div class="grid">
+      <div class="full"><label>Emergency Contact Name *</label><input /></div>
+      <div><label>Relationship *</label><input placeholder="e.g. Mother, Spouse" /></div>
+      <div><label>Emergency Contact Number *</label><input type="tel" placeholder="09xx xxx xxxx" /></div>
+      <div class="full"><label>Emergency Contact Address</label><input /></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>D. Work / School (optional but helpful)</h2>
+    <div class="grid">
+      <div><label>Employer / School Name</label><input /></div>
+      <div><label>Work / School Contact</label><input type="tel" /></div>
+      <div class="full"><label>Work / School Address</label><input /></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>E. Declaration &amp; Agreement</h2>
+    <div class="check"><input type="checkbox" style="width:auto" /> <span>I certify that the information above is true and correct. I agree to follow house rules, pay rent on time (1% late interest applies to monthly schedule when overdue), and give proper notice before moving out.</span></div>
+    <div class="check"><input type="checkbox" style="width:auto" /> <span>I attached / will send a clear photo of my valid ID and understand my Contact Number will be used as my Renter login.</span></div>
+    <div class="sig">
+      <div>Signature over printed name / Date</div>
+      <div>Owner received by / Date</div>
+    </div>
+    <div class="note"><strong>For Owner use only:</strong> Monthly Rent ₱____ • Due Day ___ • Advance ₱____ • Deposit ₱____ • Recurring (Wifi etc.) ₱____ • Room assigned ______ • Contract signed ☐ • ID verified ☐</div>
+  </div>
+
+  <div class="btnrow noprint">
+    <button class="primary" onclick="window.print()">Print / Save as PDF</button>
+    <button class="ghost" onclick="copyMessenger()">Copy Messenger version</button>
+  </div>
+  <p class="hint noprint">Send this file or the PDF to your renter via Messenger / email. Ask them to return it + ID photo. Then encode Name, Contact, Room, ID Number, Address, Move-in Date into Tenants → Add tenant.</p>
+  </form>
+</div>
+<script>
+function copyMessenger(){
+  const t = `Hello! Welcome to BeDa Rooms. Please reply with your information:\n\n1. Full Name:\n2. Contact Number (09xx xxx xxxx):\n3. Present Address (Barangay, City):\n4. Provincial Address:\n5. ID Type + ID Number:\n6. Birthdate:\n7. Room (Room 1 / Room 2 / Room 3 with aircon / Room 4):\n8. Move-in Date:\n9. Length of Stay:\n10. Payment: Once a month OR Twice a month (15th & 30th):\n11. No. of Occupants + Names:\n12. Pets (if any):\n13. Work/School + Employer Name:\n14. Emergency Contact (Name / Relationship / Number):\n\nPlease also send a clear photo of 1 valid ID. Your Contact Number will be your Renter login. Thank you!`;
+  navigator.clipboard?.writeText(t).then(()=>alert("Messenger text copied — paste it to your renter."));
+}
+</script>
+</body>
+</html>
