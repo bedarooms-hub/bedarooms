@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabase.js';
 import { useIdImageUrl } from './idStorage.js';
+import SignaturePad from './SignaturePad.jsx';
+import { listSignatures, saveSignature, latestSig } from './signatures.js';
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const PAD2 = (n) => String(n).padStart(2, "0");
@@ -217,8 +219,44 @@ export default function RenterDashboard({ tenant, payments = [], settings = {}, 
   const mayaNum = settings.mayaNumber || "09987654321";
   const currency = settings.currency || "₱";
   const idImageUrl = useIdImageUrl(tenant?.idImagePath || "");
+  const [sigs, setSigs] = useState([]);
+  const [signing, setSigning] = useState(false);
+  const [sigMsg, setSigMsg] = useState("");
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (tenant?.id) {
+      listSignatures(tenant.id).then((rows) => { if (!cancelled) setSigs(rows); });
+    } else {
+      setSigs([]);
+    }
+    return () => { cancelled = true; };
+  }, [tenant?.id]);
+
+  const landlordSig = latestSig(sigs, "landlord") || tenant?.landlordSig || null;
+  const tenantSig = latestSig(sigs, "tenant") || tenant?.tenantSig || null;
+
+  const handleTenantSign = async ({ name, image }) => {
+    setSigMsg("");
+    setSigning(true);
+    try {
+      const res = await saveSignature({ tenantId: tenant.id, phone: tenant.contact, signer: "tenant", name, image });
+      if (res?.offline) {
+        setSigMsg("Backend not connected — signature saved on this device only. Tell the owner so they can record it.");
+      } else {
+        const rows = await listSignatures(tenant.id);
+        setSigs(rows);
+        setSigMsg("Signed ✓ — the owner can now see your signature.");
+        showToast("Contract signed ✓");
+      }
+    } catch (err) {
+      setSigMsg(err.message || "Could not save signature. Try again while online.");
+    } finally {
+      setSigning(false);
+    }
+  };
 
   useEffect(() => {
     setCloudSynced(isOnline);
@@ -415,15 +453,53 @@ export default function RenterDashboard({ tenant, payments = [], settings = {}, 
           <div style={{ border: '1px solid #e8e4dc', borderRadius: 8, padding: 20, background: '#fafaf8', fontSize: 14, lineHeight: 1.8 }}>
             <div style={{ textAlign: 'center', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 18, marginBottom: 16 }}>ROOM RENTAL AGREEMENT</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div><span style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>LANDLORD</span><br /><strong>{tenant.name || '—'}</strong></div>
+              <div><span style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>LANDLORD</span><br /><strong>{settings.landlordName || '—'}</strong></div>
               <div><span style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>TENANT</span><br /><strong>{tenant.name || '—'}</strong></div>
               <div><span style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>ROOM</span><br />{tenant.roomLabel || tenant.room || '—'}</div>
               <div><span style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>MONTHLY RENT</span><br />{formatCurrency(tenant.monthlyRent)}</div>
               <div><span style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>MOVE-IN</span><br />{tenant.moveInDate || '—'}</div>
               <div><span style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>CONTACT</span><br />{tenant.contact || '—'}</div>
             </div>
-            <p style={{ marginTop: 16, fontSize: 12, color: '#888', textAlign: 'center' }}>Read-only view. Ask owner for signed Official Receipt each paid period.</p>
+            <div style={{ marginTop: 16, fontSize: 13, background: 'white', border: '1px solid #e8e4dc', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>Key terms you agree to by signing:</div>
+              <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }}>
+                <li>1-month advance &amp; 1-month deposit are <strong>non-refundable but consumable</strong> — applied to your last month / final dues, not returned in cash.</li>
+                <li>Leave the room clean on move-out, or a <strong>{formatCurrency(500)} cleaning fee</strong> will be charged.</li>
+                <li>{isSemiMonthly(tenant) ? "Twice-a-month schedule (15th & 30th) — no late interest." : "Late rent accrues 1% interest per day overdue."}</li>
+              </ul>
+              <div style={{ fontSize: 12, color: '#888', marginTop: 8 }}>Full agreement text is on the owner's printed contract — read it before signing.</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 16 }}>
+              <div>
+                <div style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>LANDLORD SIGNATURE</div>
+                {landlordSig ? (
+                  <div style={{ fontSize: 13 }}>{landlordSig.image && <img src={landlordSig.image} alt="Landlord signature" style={{ maxWidth: 160, width: '100%', background: 'white', borderRadius: 4 }} />}<div><strong>{landlordSig.name}</strong> ✓</div></div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#999' }}>Waiting for owner to sign…</div>
+                )}
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#888', fontFamily: 'var(--font-mono)' }}>MY SIGNATURE</div>
+                {tenantSig ? (
+                  <div style={{ fontSize: 13 }}>{tenantSig.image && <img src={tenantSig.image} alt="My signature" style={{ maxWidth: 160, width: '100%', background: 'white', borderRadius: 4 }} />}<div><strong>{tenantSig.name}</strong> ✓ signed</div></div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#999' }}>You haven't signed yet — use the form below.</div>
+                )}
+              </div>
+            </div>
           </div>
+          {!tenantSig && (
+            <div style={{ marginTop: 12 }}>
+              <SignaturePad
+                label="Sign your agreement"
+                initialName={tenant.name || ""}
+                saving={signing}
+                onSave={handleTenantSign}
+              />
+              {sigMsg && <div style={{ fontSize: 13, marginTop: 8, color: sigMsg.includes("✓") ? "#1a7f37" : "#c0392b" }}>{sigMsg}</div>}
+            </div>
+          )}
+          {tenantSig && sigMsg && <div style={{ fontSize: 13, marginTop: 8, color: "#1a7f37" }}>{sigMsg}</div>}
         </section>
       )}
 

@@ -7,7 +7,9 @@ import {
 } from "lucide-react";
 import { supabase } from "./supabase.js";
 import RenterDashboard from "./RenterDashboard.jsx";
+import SignaturePad from "./SignaturePad.jsx";
 import { uploadIdImage, deleteIdImage, useIdImageUrl } from "./idStorage.js";
+import { listSignatures, saveSignature, latestSig } from "./signatures.js";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const STORAGE_KEY = "rental-data";
@@ -226,6 +228,18 @@ function depositSummary(tenant, currency) {
   return parts.join(" + ");
 }
 function halfLabel(half) { return half === "a" ? "15th" : half === "b" ? "30th" : ""; }
+const LATE_RATE_PER_DAY = 0.01; // 1% per day overdue (monthly schedule only)
+// Full calendar days past the due date (due date itself = 0). Time-of-day ignored.
+function daysOverdue(dueDate, asOf = new Date()) {
+  const d = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+  const a = new Date(asOf.getFullYear(), asOf.getMonth(), asOf.getDate());
+  return Math.max(Math.floor((a - d) / 86400000), 0);
+}
+function lateInterestFor(subtotal, dueDate, asOf, semi) {
+  if (semi) return { daysLate: 0, interest: 0 };
+  const daysLate = daysOverdue(dueDate, asOf);
+  return { daysLate, interest: daysLate > 0 ? subtotal * LATE_RATE_PER_DAY * daysLate : 0 };
+}
 function periodDisplayLabel(year, month, half) {
   return half ? `${MONTHS[month - 1]} ${year} (${halfLabel(half)})` : `${MONTHS[month - 1]} ${year}`;
 }
@@ -247,11 +261,12 @@ function getPeriodInfo(tenant, payments, year, month, half = null) {
   const notes = (rec && rec.notes) || "";
   if (rec && rec.status === "paid") {
     const interest = Number(rec.interestApplied) || 0;
-    return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, total: subtotal + interest, status: "paid", amountPaid: Number(rec.amountPaid) || 0, paidDate: rec.paidDate, notes, paymentMethod: rec.paymentMethod || null };
+    const daysLate = Number(rec.daysLate) || 0;
+    return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, daysLate, total: subtotal + interest, status: "paid", amountPaid: Number(rec.amountPaid) || 0, paidDate: rec.paidDate, notes, paymentMethod: rec.paymentMethod || null };
   }
-  const isLate = new Date() > dueDate;
-  const interest = (!semi && isLate) ? subtotal * 0.01 : 0;
-  return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, total: subtotal + interest, status: isLate ? "overdue" : "due", amountPaid: 0, paidDate: null, notes, paymentMethod: null };
+  const { daysLate, interest } = lateInterestFor(subtotal, dueDate, new Date(), semi);
+  const isLate = daysLate > 0;
+  return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, daysLate, total: subtotal + interest, status: isLate ? "overdue" : "due", amountPaid: 0, paidDate: null, notes, paymentMethod: null };
 }
 
 // hooks
@@ -1011,7 +1026,7 @@ export default function RoomRentalManager() {
 
   useEffect(() => { setInvoicePeriodKey(null); setPayingKey(null); setChargesOpenKey(null); setNotesOpenKey(null); }, [selectedTenantId]);
 
-   async function saveTenant(t) {
+   async function saveTenant(t, opts = {}) {
     const currentTenants = (data?.tenants || []);
     const exists = currentTenants.some(x => x.id === t.id);
     const next = {
@@ -1022,7 +1037,7 @@ export default function RoomRentalManager() {
     await persist(next);
     setTenantForm(null);
     if (!exists) setSelectedTenantId(t.id);
-    showToast(exists ? "Tenant updated" : "Tenant added");
+    if (!opts.silent) showToast(exists ? "Tenant updated" : "Tenant added");
   }
 
   function deleteTenant(id) {
@@ -1038,15 +1053,14 @@ export default function RoomRentalManager() {
   function markPaid(tenant, period) {
     const dueDate = dueDateFor(tenant, period.year, period.month, period.half);
     const paidDateObj = new Date(paymentForm.date + "T00:00:00");
-    const isLate = paidDateObj > dueDate;
     const semi = isSemiMonthly(tenant);
     const tenantPayments = payments[tenant.id] || {};
     const existing = tenantPayments[period.key] || {};
     const baseFull = Number(tenant.monthlyRent) || 0;
     const recFull = recurringTotal(tenant);
     const subtotal = (semi ? baseFull / 2 : baseFull) + (semi ? recFull / 2 : recFull) + (existing.charges || []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
-    const interestApplied = (!semi && isLate) ? subtotal * 0.01 : 0;
-    const rec = { ...existing, amountPaid: Number(paymentForm.amount) || 0, paidDate: paymentForm.date, interestApplied, status: "paid" };
+    const { daysLate, interest: interestApplied } = lateInterestFor(subtotal, dueDate, paidDateObj, semi);
+    const rec = { ...existing, amountPaid: Number(paymentForm.amount) || 0, paidDate: paymentForm.date, interestApplied, daysLate, status: "paid" };
     persist({ ...data, payments: { ...payments, [tenant.id]: { ...tenantPayments, [period.key]: rec } } });
     setPayingKey(null);
     showToast("Payment saved ✓");
@@ -1055,7 +1069,7 @@ export default function RoomRentalManager() {
   function undoPaid(tenant, key) {
     const tenantPayments = { ...(payments[tenant.id] || {}) };
     const existing = tenantPayments[key] || {};
-    const { amountPaid, paidDate, interestApplied, status, ...rest } = existing;
+    const { amountPaid, paidDate, interestApplied, daysLate, status, ...rest } = existing;
     const hasData = (rest.charges && rest.charges.length > 0) || (rest.notes && String(rest.notes).trim() !== "") || (rest.meterReadings && Object.keys(rest.meterReadings).length > 0);
     if (hasData) tenantPayments[key] = rest; else delete tenantPayments[key];
     persist({ ...data, payments: { ...payments, [tenant.id]: tenantPayments } });
@@ -1220,17 +1234,17 @@ export default function RoomRentalManager() {
       const now = new Date().toISOString().slice(0, 10);
       const { year, month, half } = parsePeriodKey(periodKey);
       const dueDate = dueDateFor(tenant, year, month, half);
-      const isLate = new Date() > dueDate;
       const semi = isSemiMonthly(tenant);
       const baseFull = Number(tenant.monthlyRent) || 0;
       const recFull = recurringTotal(tenant);
       const subtotal = (semi ? baseFull / 2 : baseFull) + (semi ? recFull / 2 : recFull) + (existing.charges || []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
-      const interestApplied = (!semi && isLate) ? subtotal * 0.01 : 0;
+      const { daysLate, interest: interestApplied } = lateInterestFor(subtotal, dueDate, new Date(), semi);
       tenantPayments[periodKey] = {
         ...existing,
         amountPaid: Number(existing.amountPaid) || Number(subtotal) || Number(tenant.monthlyRent),
         paidDate: now,
         interestApplied,
+        daysLate,
         status: "paid",
         paymentMethod: method
       };
@@ -1406,6 +1420,7 @@ export default function RoomRentalManager() {
           <ContractTab
             tenants={tenants} settings={settings}
             selectedTenant={selectedTenant} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId}
+            onSaveTenant={saveTenant} showToast={showToast}
           />
         )}
 
@@ -1669,7 +1684,7 @@ function Dashboard({ tenants, payments, settings, onGoTenants, showToast }) {
                 <tr key={tenant.id + (half || "")}>
                   <td>{tenant.name}{tenant.room && <span style={{ fontSize: 12, color: "#5b6663" }}> — {tenant.room}</span>}{half && <span style={{ fontSize: 12, color: "#5b6663" }}> ({halfLabel(half)})</span>}</td>
                   <td className="rlm-mono">{formatMoney(info.subtotal, settings.currency)}</td>
-                  <td className="rlm-mono">{formatMoney(info.total, settings.currency)}{info.interest > 0 && <span style={{ color: "var(--rust)", fontSize: 12 }}> (+1% late)</span>}</td>
+                  <td className="rlm-mono">{formatMoney(info.total, settings.currency)}{info.interest > 0 && <span style={{ color: "var(--rust)", fontSize: 12 }}> (+1%/day × {info.daysLate}d late)</span>}</td>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{
@@ -2168,7 +2183,7 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
       </div>
       {semi && (
         <p style={{ fontSize: 12, color: "#5b6663", marginTop: -6, marginBottom: 14 }}>
-          The monthly rent above (plus any recurring charges) will be split into two equal installments, due on the 15th and the 30th of each month. No 1% late interest is applied to this tenant.
+          The monthly rent above (plus any recurring charges) will be split into two equal installments, due on the 15th and the 30th of each month. No 1%-per-day late interest is applied to this tenant.
         </p>
       )}
 
@@ -2297,7 +2312,7 @@ function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTena
   return (
     <div>
       <h1 className="rlm-h1">Payments</h1>
-      <p className="rlm-sub">Track dues and mark rent as paid. Recurring charges apply automatically; enter submeter readings or add one-off charges per period. 1% late fee auto-applies when unpaid past due date.</p>
+      <p className="rlm-sub">Track dues and mark rent as paid. Recurring charges apply automatically; enter submeter readings or add one-off charges per period. 1% per day late fee auto-applies when unpaid past due date (once-a-month schedule).</p>
 
       {tenants.length === 0 ? (
         <div className="rlm-card"><p style={{ margin: 0 }}>Add a tenant first to start tracking payments.</p></div>
@@ -2547,7 +2562,7 @@ function InvoiceTab({ tenants, payments, settings, selectedTenant, selectedTenan
                     {info.charges.map(c => (
                       <tr key={c.id}><td>{c.label}</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(c.amount, settings.currency)}</td></tr>
                     ))}
-                    {info.interest > 0 && <tr><td>Late payment interest (1%)</td><td className="rlm-mono" style={{ textAlign: "right", color: "var(--rust)" }}>{formatMoney(info.interest, settings.currency)}</td></tr>}
+                    {info.interest > 0 && <tr><td>Late interest (1% per day{info.daysLate ? ` × ${info.daysLate} day${info.daysLate === 1 ? "" : "s"}` : ""})</td><td className="rlm-mono" style={{ textAlign: "right", color: "var(--rust)" }}>{formatMoney(info.interest, settings.currency)}</td></tr>}
                     <tr><td style={{ fontWeight: 600 }}>Total due</td><td className="rlm-mono" style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(info.total, settings.currency)}</td></tr>
                     <tr><td>Amount paid</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(info.amountPaid, settings.currency)}</td></tr>
                     <tr><td style={{ fontWeight: 600 }}>Balance</td><td className="rlm-mono" style={{ textAlign: "right", fontWeight: 600, color: balance > 0 ? "var(--rust)" : "var(--green)" }}>{formatMoney(balance, settings.currency)}</td></tr>
@@ -2644,7 +2659,7 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
                   <tr><td>Rent ({periodDisplayLabel(activePeriod.year, activePeriod.month, activePeriod.half)})</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.base, settings.currency)}</td></tr>
                   {info.recurringFees.map(f=> <tr key={f.id}><td>{f.label}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(f.amount, settings.currency)}</td></tr>)}
                   {info.charges.map(c=> <tr key={c.id}><td>{c.label}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(c.amount, settings.currency)}</td></tr>)}
-                  {info.interest > 0 && <tr><td>Late interest 1%</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.interest, settings.currency)}</td></tr>}
+                  {info.interest > 0 && <tr><td>Late interest 1% per day{info.daysLate ? ` × ${info.daysLate}d` : ""}</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.interest, settings.currency)}</td></tr>}
                   <tr style={{ fontWeight:700, background:"#F4F1E7" }}><td>Total paid</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.amountPaid, settings.currency)}</td></tr>
                 </tbody>
               </table>
@@ -2668,7 +2683,45 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
   );
 }
 
-function ContractTab({ tenants, settings, selectedTenant, selectedTenantId, setSelectedTenantId }) {
+function ContractTab({ tenants, settings, selectedTenant, selectedTenantId, setSelectedTenantId, onSaveTenant, showToast }) {
+  const [sigs, setSigs] = useState([]);
+  const [savingSig, setSavingSig] = useState(null);
+  const tenantId = selectedTenant?.id || null;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!tenantId) { setSigs([]); return; }
+    listSignatures(tenantId).then(rows => { if (!cancelled) setSigs(rows); });
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
+  // Effective signature: latest backend row wins (synced), else offline tenant-record copy
+  const effLandlord = latestSig(sigs, "landlord") || (selectedTenant?.landlordSig?.name ? { name: selectedTenant.landlordSig.name, image: selectedTenant.landlordSig.image, signed_at: selectedTenant.landlordSig.signedAt } : null);
+  const effTenant = latestSig(sigs, "tenant") || (selectedTenant?.tenantSig?.name ? { name: selectedTenant.tenantSig.name, image: selectedTenant.tenantSig.image, signed_at: selectedTenant.tenantSig.signedAt } : null);
+
+  async function handleSaveSig(signer, { name, image }) {
+    if (!selectedTenant) return;
+    setSavingSig(signer);
+    try {
+      // 1) Mirror into tenant record (offline-safe, prints even without cloud)
+      const field = signer === "landlord" ? "landlordSig" : "tenantSig";
+      const sigObj = { name, image, signedAt: todayISO() };
+      await onSaveTenant?.({ ...selectedTenant, [field]: sigObj }, { silent: true });
+      // 2) Append to backend history table (syncs to renter dashboard)
+      try {
+        await saveSignature({ tenantId: selectedTenant.id, phone: selectedTenant.contact, signer, name, image });
+        const rows = await listSignatures(selectedTenant.id);
+        setSigs(rows);
+      } catch (e) {
+        showToast?.("Signed on this device (backend sync failed: " + (e.message || "offline") + ")");
+        return;
+      }
+      showToast?.(signer === "landlord" ? "Landlord signature saved ✓" : "Tenant signature saved ✓");
+    } finally {
+      setSavingSig(null);
+    }
+  }
+
   return (
     <div>
       <h1 className="rlm-h1 no-print">Contract</h1>
@@ -2699,12 +2752,12 @@ function ContractTab({ tenants, settings, selectedTenant, selectedTenantId, setS
                 {(() => {
                   const depositType = selectedTenant.depositType || "none";
                   let depositClause = null;
-                  if (depositType === "advance") depositClause = <>Upon signing, the Tenant shall pay the Landlord an advance payment of {formatMoney(selectedTenant.advanceAmount, settings.currency)}, equivalent to one (1) month's rent. This advance is non-refundable, but shall instead be credited against rent for the Tenant's final days of occupancy upon move-out, computed proportionately against the remaining days covered. No separate security deposit is required.</>;
-                  else if (depositType === "deposit") depositClause = <>Upon signing, the Tenant shall pay the Landlord a security deposit of {formatMoney(selectedTenant.depositAmount, settings.currency)}, equivalent to one (1) month's rent. This deposit is non-refundable in cash, but shall instead be credited against rent for the Tenant's final days of occupancy upon move-out, computed proportionately against the remaining days covered, less any deductions for unpaid charges or damage to the premises beyond normal wear and tear. No advance rent payment is required.</>;
-                  else if (depositType === "both") depositClause = <>Upon signing, the Tenant shall pay the Landlord an advance payment of {formatMoney(selectedTenant.advanceAmount, settings.currency)} and a security deposit of {formatMoney(selectedTenant.depositAmount, settings.currency)}, each equivalent to one (1) month's rent. Both the advance and the deposit are non-refundable in cash; instead, they shall be credited against rent for the Tenant's final days of occupancy upon move-out, computed proportionately against the remaining days covered, less any deductions for unpaid charges or damage to the premises beyond normal wear and tear.</>;
-                  else if (depositType === "custom") depositClause = <>Upon signing, the following advance/deposit arrangement applies: {selectedTenant.depositNotes || "as agreed by both parties"}.</>;
+                  if (depositType === "advance") depositClause = <>Upon signing, the Tenant shall pay the Landlord a one (1) month advance of {formatMoney(selectedTenant.advanceAmount, settings.currency)}. This advance is <strong>non-refundable but consumable</strong>: it cannot be withdrawn in cash and shall be consumed as payment for the Tenant's last month of stay, applied against the final month's rent. It may not be used for any other month. No separate security deposit is required.</>;
+                  else if (depositType === "deposit") depositClause = <>Upon signing, the Tenant shall pay the Landlord a one (1) month security deposit of {formatMoney(selectedTenant.depositAmount, settings.currency)}. This deposit is <strong>non-refundable in cash but consumable</strong>: upon move-out it shall be consumed as payment for the Tenant's remaining dues — final rent (computed proportionately against remaining days), unpaid charges, damage to the premises beyond normal wear and tear, and the ₱500 move-out cleaning fee if the room is left unclean. Any unused consumable value is forfeited; any shortfall must be paid by the Tenant. No advance rent payment is required.</>;
+                  else if (depositType === "both") depositClause = <>Upon signing, the Tenant shall pay the Landlord a one (1) month advance of {formatMoney(selectedTenant.advanceAmount, settings.currency)} and a one (1) month security deposit of {formatMoney(selectedTenant.depositAmount, settings.currency)}. Both amounts are <strong>non-refundable in cash but consumable</strong>: they shall be consumed as payment for the Tenant's last month of stay and remaining dues — final rent (computed proportionately against remaining days), unpaid charges, damage beyond normal wear and tear, and the ₱500 move-out cleaning fee if the room is left unclean. Any unused consumable value is forfeited; any shortfall must be paid by the Tenant.</>;
+                  else if (depositType === "custom") depositClause = <>Upon signing, the following advance/deposit arrangement applies: {selectedTenant.depositNotes || "as agreed by both parties"}. Any amount paid under this arrangement is non-refundable in cash but consumable against the Tenant's final dues as described above.</>;
                   if (!depositClause) return null;
-                  return <p><strong>3. Advance / Security Deposit.</strong> {depositClause}</p>;
+                  return <p><strong>3. Advance / Security Deposit (Non-Refundable, Consumable).</strong> {depositClause}</p>;
                 })()}
                 {(selectedTenant.additionalFees || []).length > 0 && (
                   <p><strong>{(selectedTenant.depositType && selectedTenant.depositType !== "none") ? "4" : "3"}. Additional Charges.</strong> In addition to rent, the Tenant agrees to pay the following recurring monthly charges: {selectedTenant.additionalFees.map(f => `${f.label} (${formatMoney(f.amount, settings.currency)})`).join(", ")}. Charges for utilities that vary by usage, such as electricity or water, will be billed separately each month based on actual consumption.</p>
@@ -2718,28 +2771,54 @@ function ContractTab({ tenants, settings, selectedTenant, selectedTenantId, setS
                       <p><strong>{n}. Late Payment.</strong> {isSemiMonthly(selectedTenant) ? (
                         <>As the Tenant follows the twice-a-month installment schedule stated above, no late payment interest shall apply to this Agreement, provided each installment is settled on or before its respective due date.</>
                       ) : (
-                        <>If the total amount due is not paid in full by the due date stated above, a late payment interest of one percent (1%) of that month's total amount due shall be added.</>
+                        <>If the total amount due is not paid in full by the due date stated above, a late payment interest of one percent (1%) per day of that month's total amount due shall be added for each day payment remains overdue.</>
                       )}</p>
                       <p><strong>{n + 1}. Use of Premises.</strong> The room shall be used solely as a residence for the Tenant and shall not be sublet without the Landlord's prior written consent.</p>
-                      <p><strong>{n + 2}. Termination.</strong> Either party may terminate this Agreement by providing written notice at least thirty (30) days in advance.</p>
+                      <p><strong>{n + 2}. Move-Out Cleanliness.</strong> The Tenant shall return the room clean and in its original condition, fair wear and tear excepted. If the room is left unclean upon move-out or at the end of the rental, a room cleaning fee of {formatMoney(500, settings.currency)} shall be charged to the Tenant, deducted from the consumable advance/deposit or payable directly by the Tenant.</p>
+                      <p><strong>{n + 3}. Termination.</strong> Either party may terminate this Agreement by providing written notice at least thirty (30) days in advance.</p>
                     </>
                   );
                 })()}
 
                 <PrintIdBlock tenant={selectedTenant} />
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 40, marginTop: 48 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 40, marginTop: 32 }}>
                   <div>
+                    {effLandlord?.image && <img src={effLandlord.image} alt="Landlord signature" style={{ maxWidth: 200, width: "100%", marginBottom: 4 }} />}
                     <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6 }}>Landlord's Signature</div>
-                    <div style={{ fontSize: 12, color: "#5b6663", marginTop: 4 }}>{settings.landlordName || ""}</div>
+                    <div style={{ fontSize: 12, color: "#5b6663", marginTop: 4 }}>
+                      {effLandlord ? <><strong style={{ color: "#1B2A28" }}>{effLandlord.name}</strong> — electronically signed {formatDate((effLandlord.signed_at || "").slice(0, 10))}</> : (settings.landlordName || "")}
+                    </div>
                   </div>
                   <div>
+                    {effTenant?.image && <img src={effTenant.image} alt="Tenant signature" style={{ maxWidth: 200, width: "100%", marginBottom: 4 }} />}
                     <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6 }}>Tenant's Signature</div>
-                    <div style={{ fontSize: 12, color: "#5b6663", marginTop: 4 }}>{selectedTenant.name}</div>
+                    <div style={{ fontSize: 12, color: "#5b6663", marginTop: 4 }}>
+                      {effTenant ? <><strong style={{ color: "#1B2A28" }}>{effTenant.name}</strong> — electronically signed {formatDate((effTenant.signed_at || "").slice(0, 10))}</> : selectedTenant.name}
+                    </div>
                   </div>
                 </div>
               </div>
-              <button className="no-print rlm-btn rlm-btn-primary" style={{ marginTop: 16 }} onClick={() => window.print()}><Printer size={15} /> Print / Save as PDF</button>
+              <div className="no-print" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16, maxWidth: 700 }}>
+                <SignaturePad
+                  label="Landlord e-signature"
+                  initialName={settings.landlordName || ""}
+                  existing={effLandlord}
+                  saving={savingSig === "landlord"}
+                  onSave={(s) => handleSaveSig("landlord", s)}
+                />
+                <SignaturePad
+                  label="Tenant e-signature (sign in person or renter signs in their dashboard)"
+                  initialName={selectedTenant.name || ""}
+                  existing={effTenant}
+                  saving={savingSig === "tenant"}
+                  onSave={(s) => handleSaveSig("tenant", s)}
+                />
+              </div>
+              <div className="no-print" style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap", alignItems: "center" }}>
+                <button className="rlm-btn rlm-btn-primary" onClick={() => window.print()}><Printer size={15} /> Print / Save as PDF</button>
+                {(!effLandlord || !effTenant) && <span style={{ fontSize: 12, color: "#5b6663" }}>Tip: both signatures print on the agreement once saved.</span>}
+              </div>
             </>
           )}
         </>

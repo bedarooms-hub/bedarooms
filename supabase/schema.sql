@@ -128,7 +128,57 @@ create policy "renter-ids renter insert own" on storage.objects
 -- Admin policy above already covers update/delete for bedarooms@gmail.com.
 
 -- ============================================================
--- 5) (Optional) normalized tables — leave commented unless you outgrow JSONB
+-- 5) contract_signatures — electronic signatures for the rental agreement
+-- One row per signing event. `image` holds a small canvas PNG dataURL.
+-- Admin signs in Contract tab; renter signs in their dashboard (or in person).
+-- Renter (r{phone}@renter.beda-rooms.local) can INSERT as signer='tenant'
+-- only for their own phone, and READ signatures tied to their phone
+-- (so they can see the landlord's countersignature on their own contract).
+-- ============================================================
+create table if not exists public.contract_signatures (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id text not null,
+  phone text not null default '',
+  signer text not null check (signer in ('tenant', 'landlord')),
+  name text not null default '',
+  image text not null default '',
+  signed_at timestamptz not null default now(),
+  created_by uuid references auth.users(id) on delete set null
+);
+
+create index if not exists contract_signatures_tenant_idx on public.contract_signatures (tenant_id);
+
+alter table public.contract_signatures enable row level security;
+
+-- Admin: full control
+drop policy if exists "contract_signatures admin all" on public.contract_signatures;
+create policy "contract_signatures admin all" on public.contract_signatures
+  for all using (
+    (auth.jwt() ->> 'email') = 'bedarooms@gmail.com'
+  )
+  with check (
+    (auth.jwt() ->> 'email') = 'bedarooms@gmail.com'
+  );
+
+-- Renter: sign (insert) as tenant for their OWN phone only
+drop policy if exists "contract_signatures renter insert own" on public.contract_signatures;
+create policy "contract_signatures renter insert own" on public.contract_signatures
+  for insert with check (
+    (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+    and signer = 'tenant'
+    and phone = (auth.jwt() -> 'user_metadata' ->> 'phone')
+  );
+
+-- Renter: read signatures tied to their OWN phone (own + landlord's countersignature)
+drop policy if exists "contract_signatures renter read own" on public.contract_signatures;
+create policy "contract_signatures renter read own" on public.contract_signatures
+  for select using (
+    (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+    and phone = (auth.jwt() -> 'user_metadata' ->> 'phone')
+  );
+
+-- ============================================================
+-- 6) (Optional) normalized tables — leave commented unless you outgrow JSONB
 -- ============================================================
 -- create table if not exists public.tenants (
 --   id text primary key,
