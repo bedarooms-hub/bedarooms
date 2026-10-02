@@ -860,7 +860,7 @@ function RenterPortal({ tenants, payments, settings, session, showToast, clearAd
                 <button className="rlm-btn rlm-btn-ghost no-print" style={{ marginTop:8 }} onClick={()=>window.print()}><Printer size={14}/> Print contract</button>
               </div>
             </div>
-            <div style={{ marginTop:12, fontSize:11, color:"#5b6663" }}>Need help? Contact owner: {settings.landlordContact || "bedakaheart@gmail.com"}</div>
+            <div style={{ marginTop:12, fontSize:11, color:"#5b6663" }}>Need help? Contact owner: {settings.landlordContact || "bedarooms@gmail.com"}</div>
           </>
         )}
       </div>

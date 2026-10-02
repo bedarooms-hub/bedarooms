@@ -63,7 +63,7 @@ create policy "rental_data renter read admin" on public.rental_data
     auth.uid() = user_id
     or (
       (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
-      and user_id = (select id from auth.users where email = 'bedakaheart@gmail.com' limit 1)
+      and user_id = (select id from auth.users where email = 'bedarooms@gmail.com' limit 1)
     )
   );
 

@@ -14,14 +14,14 @@ CREATE POLICY "rental_data renter full access" ON public.rental_data
     auth.uid() = user_id
     OR (
       (auth.jwt() ->> 'email') LIKE '%@renter.beda-rooms.local'
-      AND user_id = (SELECT id FROM auth.users WHERE email = 'bedakaheart@gmail.com' LIMIT 1)
+      AND user_id = (SELECT id FROM auth.users WHERE email = 'bedarooms@gmail.com' LIMIT 1)
     )
   )
   WITH CHECK (
     auth.uid() = user_id
     OR (
       (auth.jwt() ->> 'email') LIKE '%@renter.beda-rooms.local'
-      AND user_id = (SELECT id FROM auth.users WHERE email = 'bedakaheart@gmail.com' LIMIT 1)
+      AND user_id = (SELECT id FROM auth.users WHERE email = 'bedarooms@gmail.com' LIMIT 1)
     )
   );
 
@@ -59,7 +59,7 @@ BEGIN
   -- Get the rental data
   SELECT r.data INTO v_data
   FROM public.rental_data r
-  WHERE r.user_id = (SELECT id FROM auth.users WHERE email = 'bedakaheart@gmail.com' LIMIT 1);
+  WHERE r.user_id = (SELECT id FROM auth.users WHERE email = 'bedarooms@gmail.com' LIMIT 1);
 
   IF v_data IS NULL THEN
     RETURN jsonb_build_object('success', false, 'error', 'No rental data found');
@@ -84,7 +84,7 @@ BEGIN
   -- Update the rental_data row
   UPDATE public.rental_data
   SET data = v_data, updated_at = now()
-  WHERE user_id = (SELECT id FROM auth.users WHERE email = 'bedakaheart@gmail.com' LIMIT 1);
+  WHERE user_id = (SELECT id FROM auth.users WHERE email = 'bedarooms@gmail.com' LIMIT 1);
 
   RETURN jsonb_build_object('success', true, 'data', v_data);
 END;
