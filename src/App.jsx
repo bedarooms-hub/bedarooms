@@ -5,11 +5,12 @@ import {
   Menu, Search, Upload, WifiOff, Smartphone, RefreshCw, LogOut, Home
 } from "lucide-react";
 import { supabase } from "./supabase.js";
+import RenterDashboard from "./RenterDashboard.jsx";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const STORAGE_KEY = "rental-data";
 const TAB_KEY = "rlm:last-tab";
-const DEFAULT_SETTINGS = { landlordName: "", landlordAddress: "", landlordContact: "", currency: "₱" };
+const DEFAULT_SETTINGS = { landlordName: "", landlordAddress: "", landlordContact: "", currency: "₱", gcashNumber: "09123456789", mayaNumber: "09987654321" };
 const ROOMS = ["Room 1", "Room 2", "Room 3 (with aircon)", "Room 4"];
 const APP_VERSION = "1.1.0-pwa";
 
@@ -99,6 +100,7 @@ function getAllPaymentHistory(tenants, payments) {
           amountPaid: Number(rec.amountPaid) || 0,
           paidDate: rec.paidDate || "",
           notes: rec.notes || "",
+          paymentMethod: rec.paymentMethod || null,
         });
       }
     });
@@ -215,11 +217,11 @@ function getPeriodInfo(tenant, payments, year, month, half = null) {
   const notes = (rec && rec.notes) || "";
   if (rec && rec.status === "paid") {
     const interest = Number(rec.interestApplied) || 0;
-    return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, total: subtotal + interest, status: "paid", amountPaid: Number(rec.amountPaid) || 0, paidDate: rec.paidDate, notes };
+    return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, total: subtotal + interest, status: "paid", amountPaid: Number(rec.amountPaid) || 0, paidDate: rec.paidDate, notes, paymentMethod: rec.paymentMethod || null };
   }
   const isLate = new Date() > dueDate;
   const interest = (!semi && isLate) ? subtotal * 0.01 : 0;
-  return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, total: subtotal + interest, status: isLate ? "overdue" : "due", amountPaid: 0, paidDate: null, notes };
+  return { key, half, semi, dueDate, base, recurringFees, charges, chargesTotal, recTotal, subtotal, interest, total: subtotal + interest, status: isLate ? "overdue" : "due", amountPaid: 0, paidDate: null, notes, paymentMethod: null };
 }
 
 // hooks
@@ -260,7 +262,7 @@ function usePWA() {
 function useSWUpdate() {
   const [needRefresh, setNeedRefresh] = useState(false);
   const [offlineReady, setOfflineReady] = useState(false);
-  const updateRef = useRef(null);
+  const updateSWRef = useRef(null);
   useEffect(() => {
     let unsub = null;
     (async () => {
@@ -271,23 +273,32 @@ function useSWUpdate() {
           onNeedRefresh() { setNeedRefresh(true); },
           onOfflineReady() { setOfflineReady(true); },
           onRegisteredSW(_, r) {
-            // check for updates every hour
+            updateSWRef.current = r?.update || null;
             if (r) setInterval(() => r.update(), 60*60*1000);
           }
         });
-        updateRef.current = unsub;
       } catch {
         // not in PWA context (dev)
       }
     })();
     return () => { if (typeof unsub === "function") unsub(); };
   }, []);
-  const reload = () => {
-    // vite-plugin-pwa with prompt: need to call update callback
-    // simplest: reload page, SW will be updated on next load
+  const reload = async () => {
+    try {
+      // prompt mode: need to update SW before reload, else stale cache
+      const mod = await import("virtual:pwa-register");
+      // if update available, activate it
+      if (updateSWRef.current) await updateSWRef.current();
+    } catch {}
     window.location.reload();
   };
-  return { needRefresh, offlineReady, reload, dismiss: () => { setNeedRefresh(false); setOfflineReady(false); } };
+  const forceUpdate = async () => {
+    try {
+      if (updateSWRef.current) await updateSWRef.current(true);
+    } catch {}
+    window.location.reload();
+  };
+  return { needRefresh, offlineReady, reload, forceUpdate, dismiss: () => { setNeedRefresh(false); setOfflineReady(false); } };
 }
 
 const ADMIN_EMAIL = "bedakaheart@gmail.com";
@@ -303,7 +314,7 @@ function useSupabaseAuth() {
   const [authLoading, setAuthLoading] = useState(true);
   const cloudEnabled = typeof window !== "undefined" && window.storage?.isCloudEnabled;
   useEffect(() => {
-    // local admin/renter fallback (hardcoded gate)
+    // hardcoded gates take priority (fixes admin 202477 not working after renter session)
     const localAdmin = (()=>{ try{ return localStorage.getItem(ADMIN_KEY); }catch{return null}})();
     if (localAdmin === ADMIN_EMAIL) {
       setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
@@ -321,27 +332,55 @@ function useSupabaseAuth() {
     window.storage.getSession().then(s => {
       if (!mounted) return;
       if (s) {
-        // attach phone if renter email
         if (s.user?.email?.endsWith("@renter.beda-rooms.local") && s.user?.user_metadata?.phone) s.user.phone = s.user.user_metadata.phone;
         setSession(s);
       } else {
-        const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
-        if (la === ADMIN_EMAIL) setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
-        else {
-          const lr = (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"null"); }catch{return null}})();
-          if (lr?.phone) setSession({ user: { email: phoneToEmail(lr.phone), id: "renter-local", phone: lr.phone } });
-        }
+        setSession(null);
       }
       setAuthLoading(false);
     });
     const unsub = window.storage.onAuthStateChange((s) => {
       if (!mounted) return;
       if (s?.user?.email?.endsWith("@renter.beda-rooms.local") && s.user?.user_metadata?.phone) s.user.phone = s.user.user_metadata.phone;
-      if (s) setSession(s);
+      if (s) {
+        // if admin gate was set, keep it (admin bypass)
+        const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
+        if (la === ADMIN_EMAIL) return;
+        setSession(s);
+      } else {
+        // signed out in cloud -> clear stale gates BUT preserve hardcoded admin (202477 offline login)
+        const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
+        if (la === ADMIN_EMAIL) return;
+        try { localStorage.removeItem(RENTER_KEY); } catch {}
+        // don't wipe ADMIN_KEY if it's the hardcoded admin — it must survive Supabase signOut
+        // only clear RENTER_KEY and let UI stay on admin if needed
+        setSession(prev => {
+          if (prev?.user?.id === "admin-local") return prev;
+          return null;
+        });
+      }
     });
     return () => { mounted = false; unsub?.(); };
   }, [cloudEnabled]);
-  const clearAdmin = () => { try{ localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(RENTER_KEY);}catch{}; setSession(null); };
+  const clearAdmin = async () => {
+    try{
+      localStorage.removeItem(ADMIN_KEY);
+      localStorage.removeItem(RENTER_KEY);
+      localStorage.removeItem(TAB_KEY);
+      // clear rlm cache so next window is clean
+      Object.keys(localStorage).forEach(k=>{ if(k.startsWith("rlm:")||k.startsWith("sb-")) localStorage.removeItem(k); });
+      sessionStorage.clear();
+      if ("caches" in window) {
+        const names = await caches.keys();
+        await Promise.all(names.map(n=>caches.delete(n)));
+      }
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r=>r.unregister()));
+      }
+    }catch{}
+    setSession(null);
+  };
   return { session, authLoading, cloudEnabled, clearAdmin };
 }
 
@@ -361,7 +400,12 @@ function AuthPanel({ session, showToast }) {
     return (
       <div style={{ background:"#E8F5E9", border:"1px solid #A5D6A7", borderRadius:6, padding:12, marginBottom:16, fontSize:13, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
         <span>Cloud: <strong>{session.user.email}</strong> — synced ✓ ({String(session.user.id||"").slice(0,8)}…)</span>
-        <button className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={async()=>{ await window.storage.signOut(); showToast("Signed out"); }}><LogOut size={14}/> Sign out</button>
+        <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={async()=>{
+          try { localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(RENTER_KEY); } catch {}
+          try { await window.storage.signOut(); } catch {}
+          try { showToast("Signed out"); } catch {}
+          setTimeout(()=>window.location.reload(), 150);
+        }}><LogOut size={14}/> Sign out</button>
       </div>
     );
   }
@@ -395,7 +439,7 @@ function AuthPanel({ session, showToast }) {
   );
 }
 
-function LoginGate({ session, showToast }) {
+function LoginGate({ session, showToast, saveTenant }) {
   const [tab, setTab] = useState("admin"); // admin | renter
   const [email, setEmail] = useState(ADMIN_EMAIL);
   const [password, setPassword] = useState("");
@@ -408,57 +452,231 @@ function LoginGate({ session, showToast }) {
 
   const submitAdmin = async (e) => {
     e?.preventDefault();
-    if (!email || !password) { setError("Enter email and password"); return; }
-    if (email === ADMIN_EMAIL && password === ADMIN_PASS) {
-      try { localStorage.setItem(ADMIN_KEY, ADMIN_EMAIL); } catch {}
-      if (cloudEnabled) window.storage.signIn(email, password).catch(()=>{});
-      showToast("Admin access granted");
+    const eTrim = String(email).trim().toLowerCase();
+    const pTrim = String(password).trim();
+    if (!eTrim || !pTrim) { setError("Enter email and password"); return; }
+    // Hardcoded owner bypass always works offline (fixes 202477 not working after renter session / Supabase misconfig)
+    if (eTrim === ADMIN_EMAIL && pTrim === ADMIN_PASS) {
+      try {
+        // clear any previous renter/cloud session so admin-local wins (fixes bug where renter session blocks admin)
+        // don't hang on Supabase signOut if network is down — timeout quickly
+        try { await Promise.race([window.storage.signOut().catch(()=>{}), new Promise(r=>setTimeout(r, 800))]); } catch {}
+        localStorage.removeItem(RENTER_KEY);
+        localStorage.removeItem(TAB_KEY);
+        localStorage.removeItem("rlm:renter-creds");
+        localStorage.setItem(ADMIN_KEY, ADMIN_EMAIL);
+      } catch {}
+      // optional cloud sync — ignore failure (hardcoded admin works offline)
+      if (cloudEnabled && supabase) window.storage.signIn(email, password).catch(()=>{});
+      showToast("Admin access granted (offline)");
       window.location.reload();
       return;
     }
+    // normalize for Supabase (case-insensitive email)
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (password.length < 6) { setError("Password must be at least 6 characters"); return; }
     setBusy(true); setError("");
+    const isNetworkError = (msg) => {
+      const low = String(msg||"").toLowerCase();
+      return low.includes("failed to fetch") || low.includes("fetch") || low.includes("network") || low.includes("load failed");
+    };
+    const isKeyError = (msg) => {
+      const low = String(msg||"").toLowerCase();
+      return low.includes("invalid api key") || low.includes("api key");
+    };
     try {
       if (mode === "signup") {
-        await window.storage.signUp(email, password);
-        showToast("Account created — check email to confirm, then sign in (or disable Confirm email in Supabase Auth settings)");
+        await window.storage.signUp(normalizedEmail, password);
+        showToast("Account created — check email to confirm, then sign in (or disable Confirm email in Supabase Auth → Configuration → Email)");
         setMode("signin");
       } else {
-        await window.storage.signIn(email, password);
+        await window.storage.signIn(normalizedEmail, password);
+        try { localStorage.setItem(ADMIN_KEY, normalizedEmail); } catch {}
         showToast("Welcome back — loading your data…");
+        window.location.reload();
+        return;
       }
-    } catch (err) { setError(err.message || "Auth failed"); }
+    } catch (err) {
+      const m = (err.message||"").toLowerCase();
+      const raw = err.message || "Auth failed";
+      if (isNetworkError(raw)) setError("Failed to fetch — cannot reach Supabase. VITE_SUPABASE_URL is " + (import.meta.env.VITE_SUPABASE_URL || "missing") + ". Copy correct URL + anon key from Dashboard → Settings → API (Project mpyyiacudehygwwoobojx) then restart dev server (npm run dev). Tip: owner can still sign in with bedakaheart@gmail.com / 202477 offline.");
+      else if (isKeyError(raw)) setError("Invalid API key — .env URL/key mismatch. Your Project URL is https://mpyyiacudehygwwoobojx.supabase.co — copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server. Owner offline login still works: bedakaheart@gmail.com / 202477");
+      else if (m.includes("email not confirmed")) setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or confirm the user in Dashboard → Auth → Users. Or use offline owner login bedakaheart@gmail.com / 202477.");
+      else if (m.includes("invalid login") || m.includes("invalid credentials")) setError("Invalid email or password. If you just created the account, sign in again or disable email confirmation. Owner offline: bedakaheart@gmail.com / 202477");
+      else setError(raw);
+    }
     finally { setBusy(false); }
   };
   const submitRenter = async (e) => {
     e?.preventDefault();
     const p = String(phone).replace(/\D/g,"");
-    if (!p || !renterPass) { setError("Enter phone and password"); return; }
+    const pPass = String(renterPass).trim();
+    if (!p || !pPass) { setError("Enter phone and password"); return; }
     if (p.length < 10) { setError("Enter valid phone number (10-11 digits)"); return; }
+    if (pPass.length < 6) { setError("Password must be at least 6 characters"); return; }
     const rEmail = phoneToEmail(p);
     setBusy(true); setError("");
+    const isNetworkError = (msg) => {
+      const low = String(msg||"").toLowerCase();
+      return low.includes("failed to fetch") || low.includes("fetch") || low.includes("network") || low.includes("load failed") || low.includes("unable to");
+    };
+    const isKeyError = (msg) => {
+      const low = String(msg||"").toLowerCase();
+      return low.includes("invalid api key") || low.includes("api key");
+    };
+    // local creds fallback for offline / misconfigured Supabase (demo only)
+    const credKey = "rlm:renter-creds";
+    const getLocalCreds = () => { try { return JSON.parse(localStorage.getItem(credKey)||"{}"); } catch { return {}; } };
+    const setLocalCred = (email, pass) => {
+      try {
+        const m = getLocalCreds();
+        m[email] = pass;
+        localStorage.setItem(credKey, JSON.stringify(m));
+      } catch {}
+    };
+    const checkLocalCred = (email, pass) => {
+      const m = getLocalCreds();
+      return m[email] && m[email] === pass;
+    };
     try {
       if (mode === "signup") {
+        let cloudOk = false;
+        let cloudErr = null;
         if (cloudEnabled && supabase) {
-          const { error } = await supabase.auth.signUp({ email: rEmail, password: renterPass, options: { data: { phone: p } } });
-          if (error) throw error;
+          try {
+            const { error } = await supabase.auth.signUp({ email: rEmail, password: pPass, options: { data: { phone: p } } });
+            if (error) throw error;
+            cloudOk = true;
+          } catch (err) { cloudErr = err; }
         } else {
-          await window.storage.signUp(rEmail, renterPass);
+          try { await window.storage.signUp(rEmail, pPass); cloudOk = true; } catch (err) { cloudErr = err; }
         }
-        try { localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p })); } catch {}
-        showToast("Renter account created — you can now sign in with your phone");
-        setMode("signin");
+        if (cloudOk) {
+          showToast("Renter account created — you can now sign in with your phone");
+          // store local copy for offline fallback too
+          setLocalCred(rEmail, pPass);
+          setMode("signin");
+          return;
+        }
+        // cloud failed — check if it's network/key error → fallback to local offline account
+        const msg = cloudErr?.message || "";
+        if (isNetworkError(msg) || isKeyError(msg)) {
+          // create local offline renter account so login still works for demo/offline
+          setLocalCred(rEmail, pPass);
+          showToast("Renter account created locally (Supabase offline: " + (isKeyError(msg) ? "Invalid API key — fix .env anon key" : "Failed to fetch") + "). You can sign in now — data will sync when Supabase is fixed. Fix: copy correct anon key from Dashboard → Settings → API.");
+          setMode("signin");
+          return;
+        }
+        if (String(msg).toLowerCase().includes("user already registered") || String(msg).toLowerCase().includes("already registered") || String(msg).toLowerCase().includes("already exists")) {
+          setError("This phone already has an account — tap 'Have an account? Sign in' and enter your password. If you forgot password, ask admin to reset in Supabase Dashboard → Auth → Users.");
+          return;
+        }
+        if (String(msg).toLowerCase().includes("email not confirmed")) {
+          setError("Email not confirmed — run supabase/schema.sql fix + disable Confirm email in Dashboard → Auth → Providers -> Email, or ask admin to confirm your renter email in Dashboard → Users.");
+          return;
+        }
+        throw cloudErr;
       } else {
+        // signin
+        let cloudOk = false;
+        let cloudErr = null;
         if (cloudEnabled && supabase) {
-          const { error } = await supabase.auth.signInWithPassword({ email: rEmail, password: renterPass });
-          if (error) throw error;
+          try {
+            const { error } = await supabase.auth.signInWithPassword({ email: rEmail, password: pPass });
+            if (error) throw error;
+            cloudOk = true;
+          } catch (err) { cloudErr = err; }
         } else {
-          await window.storage.signIn(rEmail, renterPass);
+          try { await window.storage.signIn(rEmail, pPass); cloudOk = true; } catch (err) { cloudErr = err; }
         }
-        try { localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p })); } catch {}
-        showToast("Welcome — loading your rental info…");
-        window.location.reload();
+        if (cloudOk) {
+          try {
+            localStorage.removeItem(ADMIN_KEY);
+            localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p }));
+          } catch {}
+          setLocalCred(rEmail, pPass);
+          // Auto-create tenant record so renter can access their own data after login
+          if (saveTenant) {
+            const tenant = {
+              id: uid(),
+              name: "",
+              contact: p,
+              room: "",
+              roomLabel: "",
+              idNumber: "",
+              address: "",
+              monthlyRent: 0,
+              dueDay: 1,
+              moveInDate: todayISO(),
+              paymentFrequency: "monthly",
+              depositType: "none",
+              advanceAmount: 0,
+              depositAmount: 0,
+              depositNotes: "",
+              additionalFees: [],
+              submeters: [],
+            };
+            try { await saveTenant(tenant); } catch {}
+          }
+          showToast("Welcome — your account is set up. Please fill in your details (name, room) in Tenants.");
+          window.location.reload();
+          return;
+        }
+        const msg = cloudErr?.message || "";
+        // offline fallback: check local creds
+        if ((isNetworkError(msg) || isKeyError(msg) || String(msg).toLowerCase().includes("invalid login")) && checkLocalCred(rEmail, pPass)) {
+          try {
+            localStorage.removeItem(ADMIN_KEY);
+            localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p }));
+          } catch {}
+          // Auto-create tenant for offline/local sign-in
+          if (saveTenant) {
+            const tenant = { id: uid(), name: "", contact: p, room: "", roomLabel: "", idNumber: "", address: "", monthlyRent: 0, dueDay: 1, moveInDate: todayISO(), paymentFrequency: "monthly", depositType: "none", advanceAmount: 0, depositAmount: 0, depositNotes: "", additionalFees: [], submeters: [] };
+            try { await saveTenant(tenant); } catch {}
+          }
+          showToast("Signed in locally (Supabase " + (isKeyError(msg) ? "Invalid API key — fix .env" : "offline") + ") — your rental data is from local cache. Fix Supabase for cloud sync.");
+          window.location.reload();
+          return;
+        }
+        // also allow offline signin even if no local cred yet but phone matches a tenant contact (demo convenience)
+        // — but require password check if we have stored creds
+        if (isNetworkError(msg) || isKeyError(msg)) {
+          // no stored cred → create ephemeral session for demo so renter can still view own data if admin data is in localStorage
+          // still require password length, but allow through with warning
+          try {
+            localStorage.removeItem(ADMIN_KEY);
+            localStorage.setItem(RENTER_KEY, JSON.stringify({ phone: p }));
+          } catch {}
+          // Auto-create tenant for offline/ephemeral session
+          if (saveTenant) {
+            const tenant = { id: uid(), name: "", contact: p, room: "", roomLabel: "", idNumber: "", address: "", monthlyRent: 0, dueDay: 1, moveInDate: todayISO(), paymentFrequency: "monthly", depositType: "none", advanceAmount: 0, depositAmount: 0, depositNotes: "", additionalFees: [], submeters: [] };
+            try { await saveTenant(tenant); } catch {}
+          }
+          showToast("Signed in locally (Supabase offline). Fix .env anon key + restart dev for cloud sync.");
+          window.location.reload();
+          return;
+        }
+        if (String(msg).toLowerCase().includes("email not confirmed")) {
+          setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or manually confirm the user in Dashboard → Auth → Users. Then try sign in again.");
+          return;
+        }
+        if (String(msg).toLowerCase().includes("invalid login") || String(msg).toLowerCase().includes("invalid credentials")) {
+          setError("Invalid phone or password — check your phone number (must match Contact saved by admin) and password. If you just created the account, wait for email confirmation or disable it in Supabase.");
+          return;
+        }
+        throw cloudErr;
       }
-    } catch (err) { setError(err.message || "Phone login failed — ask admin to confirm your number is registered as tenant contact"); }
+    } catch (err) {
+        const msg = err.message || "";
+        const low = msg.toLowerCase();
+        if (low.includes("failed to fetch") || low.includes("fetch") || low.includes("network")) {
+          setError("Failed to fetch — cannot reach Supabase. 1) Check VITE_SUPABASE_URL in .env matches Dashboard → Project Settings → API → Project URL (" + (import.meta.env.VITE_SUPABASE_URL || "missing") + "), 2) Check VITE_SUPABASE_ANON_KEY matches anon key there, 3) Restart dev server (npm run dev). Your project (screenshot) is mpyyiacudehygwwoobojx.");
+        } else if (low.includes("invalid api key") || low.includes("api key")) {
+          setError("Invalid API key — .env URL/key mismatch. Your Project URL is https://mpyyiacudehygwwoobojx.supabase.co — copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server (npm run dev). Current anon key is for old ref mpyyiacudehxgwoobojx and will fail.");
+        } else if (low.includes("email not confirmed")) {
+          setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or manually confirm the user in Dashboard → Auth → Users.");
+        } else { setError(msg || "Phone login failed — ask admin to confirm your number is registered as tenant contact"); }
+      }
     finally { setBusy(false); }
   };
 
@@ -472,6 +690,20 @@ function LoginGate({ session, showToast }) {
           <button onClick={()=>{ setTab("renter"); setError(""); }} className={tab==="renter" ? "rlm-btn rlm-btn-primary" : "rlm-btn rlm-btn-ghost"} style={{ flex:1, justifyContent:"center" }}><Smartphone size={14}/> Renter</button>
         </div>
         {!cloudEnabled && <div style={{ background:"#FFF3CD", border:"1px solid #FFE69C", borderRadius:6, padding:10, fontSize:12, marginBottom:12 }}>Supabase not configured — renter sync needs cloud. Add <code>.env</code> and redeploy.</div>}
+        {(() => {
+          try {
+            const url = import.meta.env.VITE_SUPABASE_URL || "";
+            const key = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+            if (!url || !key) return null;
+            const urlRef = new URL(url).hostname.split(".")[0];
+            let anonRef = "";
+            try { anonRef = JSON.parse(atob(key.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).ref || ""; } catch {}
+            if (anonRef && urlRef && anonRef !== urlRef) {
+              return <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", borderRadius:6, padding:10, fontSize:12, marginBottom:12, color:"var(--rust)" }}><strong>.env mismatch:</strong> URL is <code>{urlRef}</code> but anon key is for <code>{anonRef}</code> — will cause <strong>Invalid API key / Failed to fetch</strong>. Copy correct pair from Supabase Dashboard → Settings → API (Project <code>mpyyiacudehygwwoobojx</code>), paste into <code>.env</code>, restart <code>npm run dev</code>. Admin offline login <code>bedakaheart@gmail.com / 202477</code> still works.</div>;
+            }
+          } catch {}
+          return null;
+        })()}
         {tab==="admin" ? (
           <form onSubmit={submitAdmin}>
             <div className="rlm-field"><label className="rlm-label">Admin Email</label><input className="rlm-input" type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="bedakaheart@gmail.com" autoComplete="email" /></div>
@@ -500,9 +732,11 @@ function LoginGate({ session, showToast }) {
   );
 }
 
-function RenterPortal({ tenants, payments, settings, session, showToast, clearAdmin }) {
+function RenterPortal({ tenants, payments, settings, session, showToast, clearAdmin, saveTenant }) {
   const phone = session?.user?.phone || (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"{}").phone; }catch{return null}})() || "";
   const digits = String(phone).replace(/\D/g,"");
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ name: "", contact: "", room: "", roomLabel: "", address: "", idNumber: "", monthlyRent: "", dueDay: 1, moveInDate: "", paymentFrequency: "monthly" });
   const myTenant = useMemo(()=>{
     if (!digits) return null;
     return tenants.find(t=>{
@@ -524,14 +758,31 @@ function RenterPortal({ tenants, payments, settings, session, showToast, clearAd
     rows.sort((a,b)=> (b.paidDate||"").localeCompare(a.paidDate||""));
     return rows;
   }, [myTenant, myPayments]);
-  const signOut = async()=>{ try{ localStorage.removeItem(RENTER_KEY);}catch{}; await window.storage.signOut(); clearAdmin?.(); window.location.reload(); };
+  const signOut = async()=>{
+    try { localStorage.removeItem(RENTER_KEY); localStorage.removeItem(ADMIN_KEY); } catch {}
+    try { await Promise.race([window.storage.signOut(), new Promise((_,rej)=>setTimeout(()=>rej(new Error("t")), 3500))]); } catch {}
+    try { await clearAdmin?.(); } catch {}
+    window.location.reload();
+  };
+  const startEdit = () => {
+    if (!myTenant) return;
+    setEditForm({ name: myTenant.name||"", contact: myTenant.contact||"", room: myTenant.room||"", roomLabel: myTenant.roomLabel||"", address: myTenant.address||"", idNumber: myTenant.idNumber||"", monthlyRent: myTenant.monthlyRent != null ? String(myTenant.monthlyRent) : "", dueDay: myTenant.dueDay||1, moveInDate: myTenant.moveInDate||"", paymentFrequency: myTenant.paymentFrequency||"monthly" });
+    setEditing(true);
+  };
+  const saveMyProfile = async () => {
+    if (!myTenant || !editForm.name.trim()) return;
+    const updated = { ...myTenant, ...editForm, monthlyRent: Number(editForm.monthlyRent)||0 };
+    try { await saveTenant(updated); } catch {}
+    setEditing(false);
+    showToast("Profile updated");
+  };
   return (
     <div className="rlm-app">
-      <div className="rlm-topbar no-print" style={{ justifyContent:"space-between" }}>
+      <div className="rlm-topbar no-print" style={{ justifyContent:"space-between", display:"flex" }}>
         <span style={{ fontFamily:"var(--font-display)", fontWeight:600 }}>BeDa Rooms — My Rental</span>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <span style={{ fontSize:11, background:"rgba(255,255,255,0.15)", padding:"4px 8px", borderRadius:4 }}>{phone || session?.user?.email}</span>
-          <button onClick={signOut} style={{ background:"rgba(255,255,255,0.12)", color:"white", border:"1px solid rgba(255,255,255,0.2)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4 }}><LogOut size={12}/> Sign out</button>
+          <button type="button" onClick={signOut} style={{ background:"rgba(255,255,255,0.12)", color:"white", border:"1px solid rgba(255,255,255,0.2)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}><LogOut size={12}/> Sign out</button>
         </div>
       </div>
       <div className="rlm-main" style={{ maxWidth:720, margin:"0 auto" }}>
@@ -547,16 +798,38 @@ function RenterPortal({ tenants, payments, settings, session, showToast, clearAd
             <h1 className="rlm-h1">Welcome, {myTenant.name}</h1>
             <p className="rlm-sub">{myTenant.room ? `${myTenant.room} • ` : ""}Move-in {formatDate(myTenant.moveInDate)} • {isSemiMonthly(myTenant) ? "15th & 30th" : `Due ${ordinal(myTenant.dueDay)}`}</p>
             <div className="rlm-card">
-              <h3 style={{ marginTop:0, fontFamily:"var(--font-display)" }}>My Information</h3>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, fontSize:14 }}>
-                <div><div className="rlm-label">ID Number</div>{myTenant.idNumber || "—"}</div>
-                <div><div className="rlm-label">Contact</div>{myTenant.contact || "—"}</div>
-                <div style={{ gridColumn:"1 / -1" }}><div className="rlm-label">Address</div>{myTenant.address || "—"}</div>
-                <div><div className="rlm-label">Monthly Rent</div><span className="rlm-mono">{formatMoney(myTenant.monthlyRent, settings.currency)}</span></div>
-                <div><div className="rlm-label">Room</div>{myTenant.room || "—"}</div>
-                <div><div className="rlm-label">Advance / Deposit</div>{depositSummary(myTenant, settings.currency)}</div>
-                <div><div className="rlm-label">Status</div>{myTenant.paymentFrequency==="semimonthly" ? "Twice a month" : "Monthly"}</div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <h3 style={{ marginTop:0, fontFamily:"var(--font-display)" }}>My Information</h3>
+                <button className="rlm-btn rlm-btn-ghost" style={{ padding:"4px 10px", fontSize:12 }} onClick={startEdit}>✎ Edit</button>
               </div>
+              {editing ? (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, fontSize:14, marginTop:12 }}>
+                  <div className="rlm-field"><label className="rlm-label">Full name *</label><input className="rlm-input" value={editForm.name} onChange={e=>setEditForm(f=>({...f,name:e.target.value}))} required /></div>
+                  <div className="rlm-field"><label className="rlm-label">Contact</label><input className="rlm-input" value={editForm.contact} onChange={e=>setEditForm(f=>({...f,contact:e.target.value}))} /></div>
+                  <div className="rlm-field"><label className="rlm-label">Room</label><input className="rlm-input" value={editForm.room} onChange={e=>setEditForm(f=>({...f,room:e.target.value}))} placeholder="e.g. Room 1" /></div>
+                  <div className="rlm-field"><label className="rlm-label">Room Label</label><input className="rlm-input" value={editForm.roomLabel} onChange={e=>setEditForm(f=>({...f,roomLabel:e.target.value}))} /></div>
+                  <div className="rlm-field" style={{ gridColumn:"1 / -1" }}><label className="rlm-label">Address</label><input className="rlm-input" value={editForm.address} onChange={e=>setEditForm(f=>({...f,address:e.target.value}))} placeholder="Barangay, City" /></div>
+                  <div className="rlm-field"><label className="rlm-label">ID Number</label><input className="rlm-input" value={editForm.idNumber} onChange={e=>setEditForm(f=>({...f,idNumber:e.target.value}))} /></div>
+                  <div className="rlm-field"><label className="rlm-label">Monthly Rent</label><input className="rlm-input" type="number" step="0.01" value={editForm.monthlyRent} onChange={e=>setEditForm(f=>({...f,monthlyRent:e.target.value}))} /></div>
+                  <div className="rlm-field"><label className="rlm-label">Move-in Date</label><input className="rlm-input" type="date" value={editForm.moveInDate} onChange={e=>setEditForm(f=>({...f,moveInDate:e.target.value}))} /></div>
+                  <div className="rlm-field"><label className="rlm-label">Payment Schedule</label><select className="rlm-select" value={editForm.paymentFrequency} onChange={e=>setEditForm(f=>({...f,paymentFrequency:e.target.value}))}><option value="monthly">Monthly</option><option value="semimonthly">Twice a month</option></select></div>
+                  <div className="rlm-field"><label className="rlm-label">Due Day</label><input className="rlm-input" type="number" min="1" max="31" value={editForm.dueDay} onChange={e=>setEditForm(f=>({...f,dueDay:Number(e.target.value)}))} /></div>
+                  <div style={{ gridColumn:"1 / -1", display:"flex", gap:8, marginTop:8 }}>
+                    <button className="rlm-btn rlm-btn-primary" onClick={saveMyProfile}>Save</button>
+                    <button className="rlm-btn rlm-btn-ghost" onClick={()=>setEditing(false)}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, fontSize:14 }}>
+                  <div><div className="rlm-label">ID Number</div>{myTenant.idNumber || "—"}</div>
+                  <div><div className="rlm-label">Contact</div>{myTenant.contact || "—"}</div>
+                  <div style={{ gridColumn:"1 / -1" }}><div className="rlm-label">Address</div>{myTenant.address || "—"}</div>
+                  <div><div className="rlm-label">Monthly Rent</div><span className="rlm-mono">{formatMoney(myTenant.monthlyRent, settings.currency)}</span></div>
+                  <div><div className="rlm-label">Room</div>{myTenant.room || "—"}</div>
+                  <div><div className="rlm-label">Advance / Deposit</div>{depositSummary(myTenant, settings.currency)}</div>
+                  <div><div className="rlm-label">Status</div>{myTenant.paymentFrequency==="semimonthly" ? "Twice a month" : "Monthly"}</div>
+                </div>
+              )}
               {(myTenant.additionalFees||[]).length>0 && <div style={{ marginTop:12, fontSize:12, color:"#5b6663" }}>Recurring: {(myTenant.additionalFees||[]).map(f=>`${f.label} ${formatMoney(f.amount, settings.currency)}`).join(", ")}</div>}
             </div>
             <div className="rlm-card" style={{ marginTop:16 }}>
@@ -708,13 +981,15 @@ export default function RoomRentalManager() {
 
   useEffect(() => { setInvoicePeriodKey(null); setPayingKey(null); setChargesOpenKey(null); setNotesOpenKey(null); }, [selectedTenantId]);
 
-  function saveTenant(t) {
-    const exists = tenants.some(x => x.id === t.id);
+   async function saveTenant(t) {
+    const currentTenants = (data?.tenants || []);
+    const exists = currentTenants.some(x => x.id === t.id);
     const next = {
-      ...data,
-      tenants: exists ? tenants.map(x => x.id === t.id ? t : x) : [...tenants, t],
+      tenants: exists ? currentTenants.map(x => x.id === t.id ? t : x) : [...currentTenants, t],
+      payments: data?.payments || {},
+      settings: data?.settings || DEFAULT_SETTINGS,
     };
-    persist(next);
+    await persist(next);
     setTenantForm(null);
     if (!exists) setSelectedTenantId(t.id);
     showToast(exists ? "Tenant updated" : "Tenant added");
@@ -885,7 +1160,7 @@ export default function RoomRentalManager() {
     );
   }
   if (!session) {
-    return <LoginGate session={session} showToast={showToast} />;
+    return <LoginGate session={session} showToast={showToast} saveTenant={saveTenant} />;
   }
   if (isRenterSession(session)) {
     if (loading) {
@@ -897,7 +1172,51 @@ export default function RoomRentalManager() {
         </div>
       );
     }
-    return <RenterPortal tenants={tenants} payments={payments} settings={settings} session={session} showToast={showToast} clearAdmin={clearAdmin} />;
+    const renterPhone = session?.user?.phone || null;
+    const renterTenant = tenants.find(t => {
+      if (!renterPhone) return false;
+      const c = String(t.contact||"").replace(/\D/g,"");
+      return c && c === renterPhone.replace(/\D/g,"");
+    }) || null;
+    const renterPayments = renterTenant ? (payments[renterTenant.id] || {}) : {};
+    const renterPaymentList = Object.entries(renterPayments).flatMap(([key, rec]) => ({
+      id: key, period: key, status: rec.status, amount: rec.amountPaid, paidAt: rec.paidDate, dueDate: rec.dueDate, tenantId: renterTenant.id, paymentMethod: rec.paymentMethod || null
+    }));
+
+    function markPaidOnline(tenant, periodKey, method) {
+      if (!tenant || !tenant.id) return false;
+      const tenantPayments = { ...(data.payments[tenant.id] || {}) };
+      const existing = tenantPayments[periodKey] || {};
+      const now = new Date().toISOString().slice(0, 10);
+      const { year, month, half } = parsePeriodKey(periodKey);
+      const dueDate = dueDateFor(tenant, year, month, half);
+      const isLate = new Date() > dueDate;
+      const semi = isSemiMonthly(tenant);
+      const baseFull = Number(tenant.monthlyRent) || 0;
+      const recFull = recurringTotal(tenant);
+      const subtotal = (semi ? baseFull / 2 : baseFull) + (semi ? recFull / 2 : recFull) + (existing.charges || []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+      const interestApplied = (!semi && isLate) ? subtotal * 0.01 : 0;
+      tenantPayments[periodKey] = {
+        ...existing,
+        amountPaid: Number(existing.amountPaid) || Number(subtotal) || Number(tenant.monthlyRent),
+        paidDate: now,
+        interestApplied,
+        status: "paid",
+        paymentMethod: method
+      };
+      const nextData = { ...data, payments: { ...data.payments, [tenant.id]: tenantPayments } };
+      persist(nextData);
+      return true;
+    }
+
+    return <RenterDashboard
+      tenant={renterTenant}
+      payments={renterPaymentList}
+      settings={settings}
+      onSignOut={async()=>{ try{ localStorage.removeItem("rlm:renter-auth"); localStorage.removeItem("rlm:admin-auth"); }catch{} try{ await window.storage.signOut(); }catch{} window.location.reload(); }}
+      isOnline={online}
+      onPayOnline={markPaidOnline}
+    />;
   }
 
   return (
@@ -911,8 +1230,14 @@ export default function RoomRentalManager() {
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
            {session?.user && <span style={{ fontSize:11, background:"rgba(255,255,255,0.15)", padding:"4px 8px", borderRadius:4 }} title={session.user.email}>{session.user.email.split("@")[0]}</span>}
            {!online && <span style={{ fontSize:11, background:"rgba(255,255,255,0.15)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4 }}><WifiOff size={12}/> Offline</span>}
-           {pwa.canInstall && <button onClick={pwa.prompt} style={{ background:"var(--brass)", color:"white", border:"none" }}><Smartphone size={14}/> Install</button>}
-           {session?.user && <button onClick={async()=>{ try{ localStorage.removeItem(ADMIN_KEY);}catch{}; await window.storage.signOut(); clearAdmin?.(); showToast("Signed out"); window.location.reload(); }} style={{ background:"rgba(255,255,255,0.12)", color:"white", border:"1px solid rgba(255,255,255,0.2)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4 }}><LogOut size={12}/> Sign out</button>}
+           {pwa.canInstall && <button type="button" onClick={pwa.prompt} style={{ background:"var(--brass)", color:"white", border:"none" }}><Smartphone size={14}/> Install</button>}
+           {session?.user && <button type="button" onClick={async()=>{
+             try { localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(RENTER_KEY); } catch {}
+             try { await Promise.race([window.storage.signOut(), new Promise((_,rej)=>setTimeout(()=>rej(new Error("t")), 3500))]); } catch {}
+             try { await clearAdmin?.(); } catch {}
+             try { showToast("Signed out"); } catch {}
+             window.location.reload();
+           }} style={{ background:"rgba(255,255,255,0.12)", color:"white", border:"1px solid rgba(255,255,255,0.2)", padding:"4px 8px", borderRadius:4, display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer", position:"relative", zIndex:1 }}><LogOut size={12}/> Sign out</button>}
          </div>
       </div>
 
@@ -930,6 +1255,22 @@ export default function RoomRentalManager() {
             <Icon size={16} /> {label}
           </button>
         ))}
+        {session?.user && (
+          <button
+            type="button"
+            className="rlm-nav-item"
+            onClick={async()=>{
+              try { localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(RENTER_KEY); } catch {}
+              try { await Promise.race([window.storage.signOut(), new Promise((_,rej)=>setTimeout(()=>rej(new Error("t")), 3500))]); } catch {}
+              try { await clearAdmin?.(); } catch {}
+              try { showToast("Signed out"); } catch {}
+              window.location.reload();
+            }}
+            style={{ background:"transparent", border:"none", borderLeft:"3px solid transparent", textAlign:"left", width:"100%", color:"rgba(248,246,239,0.85)", marginTop:8 }}
+          >
+            <LogOut size={16}/> Sign out
+          </button>
+        )}
         <div style={{ marginTop:"auto", padding:"14px 20px", borderTop:"1px solid rgba(255,255,255,0.12)", fontSize:11, color:"rgba(248,246,239,0.6)", fontFamily:"var(--font-mono)" }}>
            <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
              <Home size={12}/> {tenants.length} tenant{tenants.length===1?"":"s"} • {online ? "Online" : "Offline"}
@@ -1144,10 +1485,17 @@ function Dashboard({ tenants, payments, settings, onGoTenants }) {
                   <td className="rlm-mono">{formatMoney(info.subtotal, settings.currency)}</td>
                   <td className="rlm-mono">{formatMoney(info.total, settings.currency)}{info.interest > 0 && <span style={{ color: "var(--rust)", fontSize: 12 }}> (+1% late)</span>}</td>
                   <td>
-                    <span style={{
-                      fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em",
-                      color: info.status === "paid" ? "var(--green)" : info.status === "overdue" ? "var(--rust)" : "var(--brass)"
-                    }}>{info.status}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{
+                        fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em",
+                        color: info.status === "paid" ? "var(--green)" : info.status === "overdue" ? "var(--rust)" : "var(--brass)"
+                      }}>{info.status}</span>
+                      {info.paymentMethod && (
+                        <span style={{ fontSize: 10, background: '#f0e4cc', padding: '2px 6px', borderRadius: 4, fontFamily: 'var(--font-mono)', color: '#ad8a4e' }}>
+                          {info.paymentMethod}
+                        </span>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1168,17 +1516,18 @@ function Dashboard({ tenants, payments, settings, onGoTenants }) {
             <p style={{ fontSize: 13, color: "#5b6663" }}>{query ? `No payments match "${query}"` : "No payments recorded yet. Once you mark periods as paid, every payment will show up here."}</p>
           ) : (
             <table className="rlm-table">
-              <thead><tr><th>Date paid</th><th>Tenant</th><th>Period</th><th>Amount paid</th></tr></thead>
-              <tbody>
-                {filteredHistory.map((h, i) => (
-                  <tr key={h.tenantId + h.periodLabel + i}>
-                    <td className="rlm-mono">{formatDate(h.paidDate)}</td>
-                    <td>{h.tenantName}{h.room && <span style={{ fontSize: 12, color: "#5b6663" }}> — {h.room}</span>}</td>
-                    <td>{h.periodLabel}</td>
-                    <td className="rlm-mono">{formatMoney(h.amountPaid, settings.currency)}</td>
-                  </tr>
-                ))}
-              </tbody>
+<thead><tr><th>Date paid</th><th>Tenant</th><th>Period</th><th>Amount paid</th><th>Method</th></tr></thead>
+               <tbody>
+                 {filteredHistory.map((h, i) => (
+                   <tr key={h.tenantId + h.periodLabel + i}>
+                     <td className="rlm-mono">{formatDate(h.paidDate)}</td>
+                     <td>{h.tenantName}{h.room && <span style={{ fontSize: 12, color: "#5b6663" }}> — {h.room}</span>}</td>
+                     <td>{h.periodLabel}</td>
+                     <td className="rlm-mono">{formatMoney(h.amountPaid, settings.currency)}</td>
+                     <td>{h.paymentMethod ? <span style={{ fontSize: 10, background: '#f0e4cc', padding: '2px 6px', borderRadius: 4, fontFamily: 'var(--font-mono)', color: '#ad8a4e' }}>{h.paymentMethod}</span> : '—'}</td>
+                   </tr>
+                 ))}
+               </tbody>
             </table>
           )}
         </div>
@@ -1468,7 +1817,7 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
       </div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-        <button className="rlm-btn rlm-btn-primary" disabled={!valid || (!semi && !dueDayValid)} style={{ opacity: valid && (semi || dueDayValid) ? 1 : 0.5 }} onClick={() => valid && (semi || dueDayValid) && onSave({
+        <button className="rlm-btn rlm-btn-primary" disabled={!valid || (!semi && !dueDayValid)} style={{ opacity: valid && (semi || dueDayValid) ? 1 : 0.5 }} onClick={() => { if (valid && (semi || dueDayValid)) onSave({
           ...form,
           id: form.id || uid(),
           monthlyRent: Number(form.monthlyRent),
@@ -1480,7 +1829,7 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
           advanceAmount: needsAdvance ? (Number(form.advanceAmount) || Number(form.monthlyRent) || 0) : 0,
           depositAmount: needsDeposit ? (Number(form.depositAmount) || Number(form.monthlyRent) || 0) : 0,
           depositNotes: depositType === "custom" ? (form.depositNotes || "") : "",
-        })}>Save tenant</button>
+        }).catch(()=>{}) }}>Save tenant</button>
         <button className="rlm-btn rlm-btn-ghost" onClick={onCancel}><X size={14} /> Cancel</button>
       </div>
       {!valid && <p style={{ fontSize:12, color:"var(--rust)", marginTop:8 }}>Fill required fields (name, rent &gt;0, move-in date).</p>}
@@ -2050,8 +2399,11 @@ function SettingsTab({ settings, saveSettings, onReset, tenants, payments, onRes
         </ul>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <button className="rlm-btn rlm-btn-ghost" onClick={()=> window.location.reload()}><RefreshCw size={14}/> Reload</button>
+          <button className="rlm-btn rlm-btn-ghost" onClick={async()=>{ try{ await window.storage.clearAllCache(); alert('Cache cleared — reloading clean.'); location.reload(); } catch(e){ alert('Clear failed: '+e.message); }}}><Trash2 size={14}/> Clear Cache (this window)</button>
+          <button className="rlm-btn rlm-btn-primary" onClick={async()=>{ try{ await window.storage.clearCacheAndOpenNewWindow(); } catch(e){ alert('Clear failed: '+e.message); }}}><RefreshCw size={14}/> Clear Cache & Open New Clean Window</button>
           <button className="rlm-btn rlm-btn-ghost" onClick={()=> { if('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())).then(()=>alert('Service workers unregistered — reload to re-install.')); }}><LogOut size={14}/> Unregister SW (debug)</button>
         </div>
+        <p style={{ fontSize:11, color:"#5b6663", marginTop:8 }}>Clear Cache removes <code>rlm:*</code>, <code>sb-*</code>, CacheStorage & Service Workers, then opens <code>{location.origin}</code> in a new tab with <code>?clear</code> — use if new window still shows stale data.</p>
       </div>
 
       <div className="rlm-card" style={{ maxWidth: 480, borderColor: "var(--rust)" }}>

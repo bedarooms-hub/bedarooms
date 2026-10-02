@@ -55,6 +55,18 @@ drop policy if exists "rental_data self" on public.rental_data;
 create policy "rental_data self" on public.rental_data
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+-- allow renters (r{phone}@renter.beda-rooms.local) to read admin's rental_data
+-- fixes bug where renter sees 0 tenants because data is per-user (src/storage.js:26, src/App.jsx:503)
+drop policy if exists "rental_data renter read admin" on public.rental_data;
+create policy "rental_data renter read admin" on public.rental_data
+  for select using (
+    auth.uid() = user_id
+    or (
+      (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
+      and user_id = (select id from auth.users where email = 'bedakaheart@gmail.com' limit 1)
+    )
+  );
+
 -- 4) Optional: normalized tables if you later want SQL queries
 -- Uncomment if you prefer rows per tenant/payment instead of JSON blob
 -- create table if not exists public.tenants (

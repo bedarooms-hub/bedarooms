@@ -23,10 +23,26 @@ async function cloudGet() {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) return null;
+    const isRenter = session.user.email?.endsWith("@renter.beda-rooms.local");
+    // renter should read admin's row (RLS policy rental_data renter read admin)
+    let targetId = session.user.id;
+    if (isRenter) {
+      try {
+        // Direct rental_data query — RLS allows renter to see admin's row
+        // Don't query profiles (RLS blocks it), instead list rental_data rows visible to this renter
+        const { data: rows } = await supabase.from("rental_data").select("data,user_id").limit(10);
+        if (rows && rows.length) {
+          // Prefer row that is not own and has tenants
+          const adminRow = rows.find(r => r.user_id !== session.user.id && r.data?.tenants?.length) || rows.find(r => r.user_id !== session.user.id);
+          if (adminRow?.user_id) targetId = adminRow.user_id;
+          else if (rows[0]?.user_id) targetId = rows[0].user_id;
+        }
+      } catch {}
+    }
     const { data, error } = await supabase
       .from("rental_data")
       .select("data")
-      .eq("user_id", session.user.id)
+      .eq("user_id", targetId)
       .single();
     if (error) {
       // No row yet → treat as empty
@@ -178,8 +194,58 @@ window.storage = {
     return data;
   },
   async signOut() {
-    if (!isSupabaseConfigured || !supabase) return;
-    await supabase.auth.signOut();
+    // Always clear local gates immediately so UI can respond even if network hangs
+    const clearLocal = () => {
+      try {
+        localStorage.removeItem("rlm:admin-auth");
+        localStorage.removeItem("rlm:renter-auth");
+        // also clear any rlm:* mirror and Supabase sb-* tokens
+        Object.keys(localStorage).forEach(k => { if (k.startsWith(PREFIX) || k.startsWith("sb-")) localStorage.removeItem(k); });
+        sessionStorage.clear();
+      } catch {}
+    };
+    if (!isSupabaseConfigured || !supabase) {
+      clearLocal();
+      return;
+    }
+    // Try cloud signOut but never hang forever (offline / network issues)
+    // Use timeout + scope local so it doesn't require network
+    try {
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("signOut timeout")), 3000));
+      await Promise.race([
+        supabase.auth.signOut({ scope: "local" }).catch(() => supabase.auth.signOut().catch(()=>{})),
+        timeout,
+      ]).catch(()=>{});
+    } catch {}
+    clearLocal();
+    // also try global signOut in background (don't await)
+    supabase.auth.signOut().catch(()=>{});
+  },
+  async clearAllCache() {
+    try {
+      Object.keys(localStorage).forEach(k => { if (k.startsWith(PREFIX) || k.startsWith("sb-") || k === "rlm:last-tab") localStorage.removeItem(k); });
+      sessionStorage.clear();
+    } catch {}
+    try {
+      if ("caches" in window) {
+        const names = await caches.keys();
+        await Promise.all(names.map(n => caches.delete(n)));
+      }
+    } catch {}
+    try {
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
+    } catch {}
+    return true;
+  },
+  async clearCacheAndOpenNewWindow() {
+    await window.storage.clearAllCache();
+    try { await window.storage.signOut(); } catch {}
+    const url = location.origin + location.pathname + "?clear=" + Date.now() + "#dashboard";
+    window.open(url, "_blank", "noopener");
+    location.reload();
   },
   onAuthStateChange(cb) {
     if (!isSupabaseConfigured || !supabase) return () => {};
@@ -198,4 +264,11 @@ window.__rlm_storageSize = () => {
   return total;
 };
 
+window.__clearCache = async () => {
+  await window.storage.clearAllCache();
+  location.reload();
+};
+window.__clearCacheAndOpenNew = async () => {
+  await window.storage.clearCacheAndOpenNewWindow();
+};
 window.__rlm_supabaseReady = isSupabaseConfigured;
