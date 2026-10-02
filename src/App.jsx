@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, Fragment, useRef } from "react";
 import {
   Users, Receipt, FileText, Settings as SettingsIcon, LayoutDashboard,
   Plus, Trash2, Pencil, Printer, CheckCircle2, AlertTriangle, Clock, X, Undo2, Download,
-  Menu, Search, Upload, WifiOff, Smartphone, RefreshCw, LogOut, Home
+  Menu, Search, Upload, WifiOff, Smartphone, RefreshCw, LogOut, Home,
+  Copy, Mail, MessageSquareText, Send, RotateCcw, ChevronDown
 } from "lucide-react";
 import { supabase } from "./supabase.js";
 import RenterDashboard from "./RenterDashboard.jsx";
@@ -13,6 +14,33 @@ const TAB_KEY = "rlm:last-tab";
 const DEFAULT_SETTINGS = { landlordName: "", landlordAddress: "", landlordContact: "", currency: "₱", gcashNumber: "09123456789", mayaNumber: "09987654321" };
 const ROOMS = ["Room 1", "Room 2", "Room 3 (with aircon)", "Room 4"];
 const APP_VERSION = "1.1.0-pwa";
+const INTAKE_KEY = "rlm:renter-intake-template";
+const RENTER_INTAKE_TEMPLATE = `Hello! Welcome to BeDa Rooms. Please reply with your information:
+
+1. Full Name:
+2. Contact Number (09xx xxx xxxx):
+3. Present Address (Barangay, City):
+4. Provincial Address:
+5. ID Type + ID Number:
+6. Birthdate:
+7. Room (Room 1 / Room 2 / Room 3 with aircon / Room 4):
+8. Move-in Date:
+9. Length of Stay:
+10. Payment: Once a month OR Twice a month (15th & 30th):
+11. No. of Occupants + Names:
+12. Pets (if any):
+13. Work/School + Employer Name:
+14. Emergency Contact (Name / Relationship / Number):
+
+Please also send a clear photo of 1 valid ID. Your Contact Number will be your Renter login. Thank you!`;
+
+function loadIntakeTemplate() {
+  try {
+    const saved = localStorage.getItem(INTAKE_KEY);
+    if (saved) return saved;
+  } catch {}
+  return RENTER_INTAKE_TEMPLATE;
+}
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function pad2(n) { return String(n).padStart(2, "0"); }
@@ -1322,7 +1350,7 @@ export default function RoomRentalManager() {
         )}
 
         {tab === "dashboard" && (
-          <Dashboard tenants={tenants} payments={payments} settings={settings} onGoTenants={() => setTab("tenants")} />
+          <Dashboard tenants={tenants} payments={payments} settings={settings} onGoTenants={() => setTab("tenants")} showToast={showToast} />
         )}
 
         {tab === "tenants" && (
@@ -1394,7 +1422,117 @@ export default function RoomRentalManager() {
   );
 }
 
-function Dashboard({ tenants, payments, settings, onGoTenants }) {
+function RenterIntakeCard({ showToast }) {
+  const [text, setText] = useState(loadIntakeTemplate);
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const persistText = (v) => {
+    setText(v);
+    try { localStorage.setItem(INTAKE_KEY, v); } catch {}
+  };
+
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // fallback for older browsers / non-secure context
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch {}
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    try { showToast?.("Info request copied — ready to paste"); } catch {}
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const smsHref = `sms:?&body=${encodeURIComponent(text)}`;
+  const emailHref = `mailto:?subject=${encodeURIComponent("BeDa Rooms — Renter Information")}&body=${encodeURIComponent(text)}`;
+  const reset = () => {
+    persistText(RENTER_INTAKE_TEMPLATE);
+    try { showToast?.("Template reset"); } catch {}
+  };
+
+  const sendViaMessenger = async () => {
+    await copyText();
+    // Messenger has no official pre-filled-text URL, so copy first then open Messenger
+    window.open("https://www.messenger.com/", "_blank", "noopener");
+  };
+
+  const shareNative = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title: "BeDa Rooms — Renter Information", text }); return; }
+      catch { /* user cancelled — fall through */ }
+    }
+    copyText();
+  };
+
+  return (
+    <div className="rlm-card no-print" style={{ borderColor: "var(--brass)", marginBottom: 16 }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        style={{ background: "transparent", border: "none", width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", padding: 0, textAlign: "left" }}
+      >
+        <span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 16, fontWeight: 700, fontFamily: "var(--font-display)" }}>
+            <Send size={16} /> New Renter Info Request
+          </span>
+          <span style={{ display: "block", fontSize: 12, color: "#5b6663", marginTop: 4 }}>
+            {open ? "Tap to collapse" : "Ready-to-send onboarding form — SMS, email, or Messenger"} • {text.length} chars
+          </span>
+        </span>
+        <ChevronDown size={18} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }} />
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <textarea
+            className="rlm-input"
+            rows={14}
+            value={text}
+            onChange={e => persistText(e.target.value)}
+            aria-label="Renter info request message (editable)"
+            style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12.5, lineHeight: 1.6, whiteSpace: "pre-wrap" }}
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+            <button type="button" className="rlm-btn rlm-btn-primary" onClick={copyText}>
+              <Copy size={14} /> {copied ? "Copied ✓" : "Copy text"}
+            </button>
+            <a className="rlm-btn rlm-btn-ghost" href={smsHref} style={{ textDecoration: "none" }}>
+              <MessageSquareText size={14} /> Text / SMS
+            </a>
+            <a className="rlm-btn rlm-btn-ghost" href={emailHref} style={{ textDecoration: "none" }}>
+              <Mail size={14} /> Email
+            </a>
+            <button type="button" className="rlm-btn rlm-btn-ghost" onClick={sendViaMessenger} title="Copies the text, then opens Messenger so you can paste it">
+              <Send size={14} /> Messenger
+            </button>
+            {typeof navigator !== "undefined" && navigator.share && (
+              <button type="button" className="rlm-btn rlm-btn-ghost" onClick={shareNative}>
+                <Send size={14} /> Share…
+              </button>
+            )}
+            <button type="button" className="rlm-btn rlm-btn-ghost" onClick={reset} title="Restore original wording">
+              <RotateCcw size={14} /> Reset
+            </button>
+          </div>
+          <p style={{ fontSize: 11, color: "#5b6663", marginTop: 8, marginBottom: 0 }}>
+            Tip: <strong>Text / SMS</strong> and <strong>Email</strong> open your messaging app with the form pre-filled.
+            <strong> Messenger</strong> has no pre-fill API, so it copies the form first — then just paste it into the chat.
+            Edits auto-save on this device.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ tenants, payments, settings, onGoTenants, showToast }) {
   const now = new Date();
   const y = now.getFullYear(), m = now.getMonth() + 1;
   const [query, setQuery] = useState("");
@@ -1466,6 +1604,8 @@ function Dashboard({ tenants, payments, settings, onGoTenants }) {
         <div className="rlm-card"><div className="rlm-stat-label">Overdue</div><div className="rlm-stat-value" style={{ color: overdueCount ? "var(--rust)" : "inherit" }}>{overdueCount} bill{overdueCount === 1 ? "" : "s"}</div></div>
         <div className="rlm-card"><div className="rlm-stat-label">Overdue amount</div><div className="rlm-stat-value" style={{ color: overdueTotal ? "var(--rust)" : "inherit" }}>{formatMoney(overdueTotal, settings.currency)}</div></div>
       </div>
+
+      <RenterIntakeCard showToast={showToast} />
 
       <div className="rlm-card">
         {tenants.length === 0 ? (
