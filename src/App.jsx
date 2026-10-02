@@ -489,6 +489,7 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
   const [email, setEmail] = useState(ADMIN_EMAIL);
   const [password, setPassword] = useState("");
   const [renterEmail, setRenterEmail] = useState("");
+  const [renterId, setRenterId] = useState(""); // sign-in identifier: email OR phone
   const [phone, setPhone] = useState("");
   const [renterPass, setRenterPass] = useState("");
   const [mode, setMode] = useState("signin");
@@ -555,12 +556,35 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
   };
   const submitRenter = async (e) => {
     e?.preventDefault();
-    const p = String(phone).replace(/\D/g,"");
     const pPass = String(renterPass).trim();
-    if (!p || !pPass) { setError("Enter phone and password"); return; }
-    if (p.length < 10) { setError("Enter valid phone number (10-11 digits)"); return; }
     if (pPass.length < 6) { setError("Password must be at least 6 characters"); return; }
-    const rEmail = phoneToEmail(p);
+    // Sign-in accepts email OR phone. Sign-up needs both (must match the tenant record admin saved).
+    let rEmail = "";
+    let p = "";
+    if (mode === "signup") {
+      rEmail = String(renterEmail).trim().toLowerCase();
+      p = String(phone).replace(/\D/g,"");
+      if (!rEmail || !rEmail.includes("@")) { setError("Enter your email address"); return; }
+      if (p.length < 10) { setError("Enter your phone number (10-11 digits) — it must match the Contact number admin saved for you"); return; }
+    } else {
+      const idRaw = String(renterId).trim();
+      if (!idRaw) { setError("Enter your email or phone number"); return; }
+      if (idRaw.includes("@")) {
+        rEmail = idRaw.toLowerCase();
+        // link phone from the tenant record admin saved (match by login email)
+        const linked = tenants.find(t => String(t.email || "").trim().toLowerCase() === rEmail);
+        p = linked ? String(linked.contact || "").replace(/\D/g,"") : "";
+      } else {
+        p = idRaw.replace(/\D/g,"");
+        if (p.length < 10) { setError("Enter a valid email address or phone number"); return; }
+        rEmail = phoneToEmail(p); // legacy phone-based account
+        const linked = tenants.find(t => {
+          const c = String(t.contact || "").replace(/\D/g,"");
+          return c && (c === p || c.slice(-10) === p.slice(-10));
+        });
+        if (linked && linked.email) rEmail = String(linked.email).trim().toLowerCase();
+      }
+    }
     setBusy(true); setError("");
     const isNetworkError = (msg) => {
       const low = String(msg||"").toLowerCase();
@@ -573,17 +597,32 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
     // local creds fallback for offline / misconfigured Supabase (demo only)
     const credKey = "rlm:renter-creds";
     const getLocalCreds = () => { try { return JSON.parse(localStorage.getItem(credKey)||"{}"); } catch { return {}; } };
-    const setLocalCred = (email, pass) => {
+    const setLocalCred = (email, pass, phoneDigits = "") => {
       try {
         const m = getLocalCreds();
-        m[email] = pass;
+        m[email] = { pass, phone: phoneDigits };
         localStorage.setItem(credKey, JSON.stringify(m));
       } catch {}
     };
-    const checkLocalCred = (email, pass) => {
+    const getLocalRec = (email) => {
       const m = getLocalCreds();
-      return m[email] && m[email] === pass;
+      const v = m[email];
+      if (!v) return null;
+      if (typeof v === "string") return { pass: v, phone: "" }; // legacy shape
+      return { pass: v.pass || "", phone: v.phone || "" };
     };
+    const checkLocalCred = (email, pass) => {
+      const rec = getLocalRec(email);
+      return !!rec && rec.pass === pass;
+    };
+    // tenant record admin saved (match by login email and/or contact phone)
+    const findTenantRecord = (emailAddr, phoneDigits) => tenants.find(t => {
+      const em = String(t.email || "").trim().toLowerCase();
+      const c = String(t.contact || "").replace(/\D/g,"");
+      const emailOk = emailAddr && em && em === emailAddr;
+      const phoneOk = phoneDigits && c && (c === phoneDigits || c.slice(-10) === phoneDigits.slice(-10));
+      return emailOk || phoneOk;
+    }) || null;
     try {
       if (mode === "signup") {
         let cloudOk = false;
@@ -1976,7 +2015,7 @@ function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, 
   const filtered = tenants.filter(t=>{
     if(!query.trim()) return true;
     const q=query.toLowerCase();
-    return t.name.toLowerCase().includes(q) || (t.room||"").toLowerCase().includes(q) || (t.idNumber||"").toLowerCase().includes(q) || (t.address||"").toLowerCase().includes(q);
+    return t.name.toLowerCase().includes(q) || (t.room||"").toLowerCase().includes(q) || (t.idNumber||"").toLowerCase().includes(q) || (t.address||"").toLowerCase().includes(q) || (t.email||"").toLowerCase().includes(q);
   });
   return (
     <div>
@@ -2005,12 +2044,13 @@ function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, 
             <p style={{ textAlign: "center", padding: "20px 0", color: "#5b6663" }}>{tenants.length===0 ? "No tenants added yet." : `No tenants match "${query}"`}</p>
           ) : (
             <table className="rlm-table">
-              <thead><tr><th>Room</th><th>Name</th><th>ID</th><th>ID photo</th><th>Address</th><th>Rent</th><th>Recurring</th><th>Advance / deposit</th><th>Schedule</th><th></th></tr></thead>
+              <thead><tr><th>Room</th><th>Name</th><th>Login email</th><th>ID</th><th>ID photo</th><th>Address</th><th>Rent</th><th>Recurring</th><th>Advance / deposit</th><th>Schedule</th><th></th></tr></thead>
               <tbody>
                 {filtered.map(t => (
                   <tr key={t.id}>
                     <td style={{ fontWeight: 600 }}>{t.room || "—"}</td>
                     <td>{t.name}</td>
+                    <td style={{ fontSize: 12 }}>{t.email || "—"}</td>
                     <td className="rlm-mono" style={{ fontSize: 12 }}>{t.idType ? `${t.idType}: ` : ""}{t.idNumber || "—"}</td>
                     <td><IdThumb path={t.idImagePath} /></td>
                     <td>{t.address || "—"}</td>
@@ -2043,7 +2083,7 @@ function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, 
 }
 
 function TenantForm({ initial, tenants = [], onSave, onCancel }) {
-  const [form, setForm] = useState(initial || { name: "", room: "", idType: "", idNumber: "", idImagePath: "", address: "", contact: "", monthlyRent: "", dueDay: 1, moveInDate: todayISO(), additionalFees: [], submeters: [], depositType: "none", advanceAmount: "", depositAmount: "", depositNotes: "", paymentFrequency: "monthly" });
+  const [form, setForm] = useState(initial || { name: "", room: "", idType: "", idNumber: "", idImagePath: "", email: "", address: "", contact: "", monthlyRent: "", dueDay: 1, moveInDate: todayISO(), additionalFees: [], submeters: [], depositType: "none", advanceAmount: "", depositAmount: "", depositNotes: "", paymentFrequency: "monthly" });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
@@ -2164,7 +2204,8 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
           {uploadError && <div style={{ fontSize: 12, color: "var(--rust)", marginTop: 6 }}>{uploadError}</div>}
         </div>
         <div className="rlm-field" style={{ gridColumn: "1 / -1" }}><label className="rlm-label">Address</label><input className="rlm-input" value={form.address} onChange={e => set("address", e.target.value)} placeholder="Barangay, City" /></div>
-        <div className="rlm-field"><label className="rlm-label">Contact number (optional)</label><input className="rlm-input" type="tel" value={form.contact} onChange={e => set("contact", e.target.value)} placeholder="09xx xxx xxxx" /></div>
+        <div className="rlm-field"><label className="rlm-label">Contact number (renter login phone)</label><input className="rlm-input" type="tel" value={form.contact} onChange={e => set("contact", e.target.value)} placeholder="09xx xxx xxxx" /></div>
+        <div className="rlm-field"><label className="rlm-label">Renter login email (saved by admin)</label><input className="rlm-input" type="email" value={form.email || ""} onChange={e => set("email", e.target.value)} placeholder="renter@example.com" /></div>
         <div className="rlm-field"><label className="rlm-label">Monthly rent (total) *</label><input className="rlm-input" type="number" min="0" step="0.01" value={form.monthlyRent} onChange={e => set("monthlyRent", e.target.value)} placeholder="e.g. 4500" required />
           {form.monthlyRent !== "" && rentNum <=0 && <span style={{ fontSize:11, color:"var(--rust)" }}>Rent must be greater than 0</span>}
         </div>
