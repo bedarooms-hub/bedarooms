@@ -87,3 +87,4 @@ React 18, Vite 5, `vite-plugin-pwa` 1.3 + Workbox 7, `lucide-react`, Google Font
 # beda-rooms
 # beda-room
 # bedarooms
+# bedarooms
