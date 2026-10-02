@@ -85,3 +85,4 @@ Must be **HTTPS** for installability.
 React 18, Vite 5, `vite-plugin-pwa` 1.3 + Workbox 7, `lucide-react`, Google Fonts (Fraunces / IBM Plex).
 
 # beda-rooms
+# beda-room
