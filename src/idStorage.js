@@ -52,7 +52,15 @@ export async function uploadIdImage(file, { phone, tenantId } = {}) {
     contentType: file.type || "image/jpeg",
     upsert: false,
   });
-  if (error) throw new Error(error.message || "Upload failed");
+  if (error) {
+    const msg = error.message || "Upload failed";
+    if (/bucket not found/i.test(msg)) {
+      throw new Error(
+        "Storage bucket 'renter-ids' not found — create it in Supabase (SQL below or Dashboard → Storage → New bucket named 'renter-ids', Private), then try again."
+      );
+    }
+    throw new Error(msg);
+  }
   return { path, dataUrl: null, localOnly: false };
 }
 
