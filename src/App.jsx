@@ -301,8 +301,8 @@ function useSWUpdate() {
   return { needRefresh, offlineReady, reload, forceUpdate, dismiss: () => { setNeedRefresh(false); setOfflineReady(false); } };
 }
 
-const ADMIN_EMAIL = "bedakaheart@gmail.com";
-const ADMIN_PASS = "202477";
+const ADMIN_EMAIL = "bedarooms@gmail.com";
+const ADMIN_PASS = "Bhingdan7*";
 const ADMIN_KEY = "rlm:admin-auth";
 const RENTER_KEY = "rlm:renter-auth";
 function phoneToEmail(phone){ const d=String(phone).replace(/\D/g,""); return `r${d}@renter.beda-rooms.local`; }
