@@ -455,7 +455,7 @@ function LoginGate({ session, showToast, saveTenant }) {
     const eTrim = String(email).trim().toLowerCase();
     const pTrim = String(password).trim();
     if (!eTrim || !pTrim) { setError("Enter email and password"); return; }
-    // Hardcoded owner bypass always works offline (fixes 202477 not working after renter session / Supabase misconfig)
+    // Hardcoded owner bypass always works offline (fixes admin offline login not working after renter session / Supabase misconfig)
     if (eTrim === ADMIN_EMAIL && pTrim === ADMIN_PASS) {
       try {
         // clear any previous renter/cloud session so admin-local wins (fixes bug where renter session blocks admin)
@@ -499,10 +499,10 @@ function LoginGate({ session, showToast, saveTenant }) {
     } catch (err) {
       const m = (err.message||"").toLowerCase();
       const raw = err.message || "Auth failed";
-      if (isNetworkError(raw)) setError("Failed to fetch — cannot reach Supabase. VITE_SUPABASE_URL is " + (import.meta.env.VITE_SUPABASE_URL || "missing") + ". Copy correct URL + anon key from Dashboard → Settings → API (Project mpyyiacudehygwwoobojx) then restart dev server (npm run dev). Tip: owner can still sign in with bedakaheart@gmail.com / 202477 offline.");
-      else if (isKeyError(raw)) setError("Invalid API key — .env URL/key mismatch. Your Project URL is https://mpyyiacudehygwwoobojx.supabase.co — copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server. Owner offline login still works: bedakaheart@gmail.com / 202477");
-      else if (m.includes("email not confirmed")) setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or confirm the user in Dashboard → Auth → Users. Or use offline owner login bedakaheart@gmail.com / 202477.");
-      else if (m.includes("invalid login") || m.includes("invalid credentials")) setError("Invalid email or password. If you just created the account, sign in again or disable email confirmation. Owner offline: bedakaheart@gmail.com / 202477");
+      if (isNetworkError(raw)) setError("Failed to fetch — cannot reach Supabase. VITE_SUPABASE_URL is " + (import.meta.env.VITE_SUPABASE_URL || "missing") + ". Copy correct URL + anon key from Dashboard → Settings → API (Project mpyyiacudehygwwoobojx) then restart dev server (npm run dev). Tip: owner can still sign in with bedarooms@gmail.com offline.");
+      else if (isKeyError(raw)) setError("Invalid API key — .env URL/key mismatch. Your Project URL is https://mpyyiacudehygwwoobojx.supabase.co — copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server. Owner offline login still works: bedarooms@gmail.com");
+      else if (m.includes("email not confirmed")) setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or confirm the user in Dashboard → Auth → Users. Or use offline owner login bedarooms@gmail.com.");
+      else if (m.includes("invalid login") || m.includes("invalid credentials")) setError("Invalid email or password. If you just created the account, sign in again or disable email confirmation. Owner offline: bedarooms@gmail.com");
       else setError(raw);
     }
     finally { setBusy(false); }
