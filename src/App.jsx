@@ -3,16 +3,18 @@ import {
   Users, Receipt, FileText, Settings as SettingsIcon, LayoutDashboard,
   Plus, Trash2, Pencil, Printer, CheckCircle2, AlertTriangle, Clock, X, Undo2, Download,
   Menu, Search, Upload, WifiOff, Smartphone, RefreshCw, LogOut, Home,
-  Copy, Mail, MessageSquareText, Send, RotateCcw, ChevronDown
+  Copy, Mail, MessageSquareText, Send, RotateCcw, ChevronDown, Camera, Trash
 } from "lucide-react";
 import { supabase } from "./supabase.js";
 import RenterDashboard from "./RenterDashboard.jsx";
+import { uploadIdImage, deleteIdImage, useIdImageUrl } from "./idStorage.js";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const STORAGE_KEY = "rental-data";
 const TAB_KEY = "rlm:last-tab";
 const DEFAULT_SETTINGS = { landlordName: "", landlordAddress: "", landlordContact: "", currency: "₱", gcashNumber: "09123456789", mayaNumber: "09987654321" };
 const ROOMS = ["Room 1", "Room 2", "Room 3 (with aircon)", "Room 4"];
+const ID_TYPES = ["Driver's License", "Passport", "National ID (PhilSys)", "UMID", "Voter's ID", "SSS ID", "PhilHealth ID", "PRC ID", "Postal ID", "Barangay ID", "Student ID", "Company ID", "Other"];
 const APP_VERSION = "1.1.0-pwa";
 const INTAKE_KEY = "rlm:renter-intake-template";
 const RENTER_INTAKE_TEMPLATE = `Hello! Welcome to BeDa Rooms. Please reply with your information:
@@ -1589,6 +1591,50 @@ function Dashboard({ tenants, payments, settings, onGoTenants, showToast }) {
     downloadFile(`yearly-income-${yearData.year}.csv`, toCSV(rows), "text/csv;charset=utf-8;");
   }
 
+  // Business start — first year the business accepted rentals
+  // = earliest of (first paid rent date, earliest tenant move-in). Report runs Jan of that year → today.
+  const businessStart = useMemo(() => {
+    let firstPaid = null;
+    history.forEach(h => { if (h.paidDate && (!firstPaid || h.paidDate < firstPaid)) firstPaid = h.paidDate; });
+    let firstMoveIn = null;
+    tenants.forEach(t => { if (t.moveInDate && (!firstMoveIn || t.moveInDate < firstMoveIn)) firstMoveIn = t.moveInDate; });
+    const first = [firstPaid, firstMoveIn].filter(Boolean).sort()[0] || null;
+    const startYear = first ? Number(String(first).slice(0, 4)) : new Date().getFullYear();
+    return { firstDate: first, startYear, firstPaid };
+  }, [history, tenants]);
+  const thisYear = new Date().getFullYear();
+  const [reportFrom, setReportFrom] = useState(null); // null = business start
+  const [reportTo, setReportTo] = useState(null);     // null = this year
+  const [showFullReport, setShowFullReport] = useState(false);
+  const repFrom = reportFrom ?? businessStart.startYear;
+  const repTo = reportTo ?? thisYear;
+  const reportHistory = useMemo(() => {
+    return history
+      .filter(h => {
+        const yr = h.paidDate ? Number(String(h.paidDate).slice(0, 4)) : null;
+        return yr && yr >= repFrom && yr <= repTo;
+      })
+      .slice()
+      .sort((a, b) => (a.paidDate || "").localeCompare(b.paidDate || "")); // oldest first for history print
+  }, [history, repFrom, repTo]);
+  const reportYears = useMemo(() => yearly.filter(yy => yy.year >= repFrom && yy.year <= repTo).sort((a, b) => a.year - b.year), [yearly, repFrom, repTo]);
+  const reportTenantTotals = useMemo(() => {
+    const map = {};
+    reportHistory.forEach(h => { map[h.tenantName] = (map[h.tenantName] || 0) + (Number(h.amountPaid) || 0); });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [reportHistory]);
+  const reportTotal = reportHistory.reduce((s, h) => s + (Number(h.amountPaid) || 0), 0);
+  const yearOptions = useMemo(() => {
+    const arr = [];
+    for (let yr = businessStart.startYear; yr <= thisYear; yr++) arr.push(yr);
+    return arr.reverse();
+  }, [businessStart.startYear, thisYear]);
+  function downloadFullHistoryCSV() {
+    const rows = [["Date paid", "Tenant", "Room", "Period", "Amount paid", "Method", "Notes"]];
+    reportHistory.forEach(h => rows.push([h.paidDate, h.tenantName, h.room, h.periodLabel, Number(h.amountPaid).toFixed(2), h.paymentMethod || "", h.notes || ""]));
+    downloadFile(`beda-rooms-history-${repFrom}-${repTo}.csv`, toCSV(rows), "text/csv;charset=utf-8;");
+  }
+
   return (
     <div>
       <h1 className="rlm-h1">Dashboard</h1>
@@ -1742,10 +1788,172 @@ function Dashboard({ tenants, payments, settings, onGoTenants, showToast }) {
           </>
         )}
       </div>
+
+      {/* Full history report — from business start (first accepted rental) */}
+      <div className="rlm-card no-print" style={{ marginTop: 16, borderColor: "var(--brass)" }}>
+        <h2 style={{ margin: "0 0 4px", fontSize: 16 }}>Full History Report — Since Day One</h2>
+        <p style={{ fontSize: 12, color: "#5b6663", margin: "0 0 12px" }}>
+          {businessStart.firstDate
+            ? <>Business first accepted rentals on <strong>{formatDate(businessStart.firstDate)}</strong> — report runs January {businessStart.startYear} → today. Adjust range if needed.</>
+            : <>No rentals recorded yet — report will start from January {businessStart.startYear} once you mark the first payment paid.</>}
+        </p>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
+          <div className="rlm-field" style={{ marginBottom: 0, minWidth: 120 }}>
+            <label className="rlm-label">From year</label>
+            <select className="rlm-select" value={repFrom} onChange={e => setReportFrom(Number(e.target.value))}>
+              {yearOptions.map(yr => <option key={yr} value={yr}>{yr}</option>)}
+            </select>
+          </div>
+          <div className="rlm-field" style={{ marginBottom: 0, minWidth: 120 }}>
+            <label className="rlm-label">To year</label>
+            <select className="rlm-select" value={repTo} onChange={e => setReportTo(Number(e.target.value))}>
+              {yearOptions.map(yr => <option key={yr} value={yr}>{yr}</option>)}
+            </select>
+          </div>
+          <button className="rlm-btn rlm-btn-ghost" onClick={() => { setReportFrom(null); setReportTo(null); }}>Reset to day one</button>
+          <span style={{ fontSize: 12, color: "#5b6663" }}>{reportHistory.length} payment(s) • {formatMoney(reportTotal, settings.currency)}</span>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="rlm-btn rlm-btn-ghost" onClick={() => setShowFullReport(s => !s)}>{showFullReport ? "Hide preview" : "Preview report"}</button>
+          {reportHistory.length > 0 && <button className="rlm-btn rlm-btn-ghost" onClick={downloadFullHistoryCSV}><Download size={14} /> History CSV ({repFrom}–{repTo})</button>}
+          <button
+            className="rlm-btn rlm-btn-primary"
+            disabled={reportHistory.length === 0}
+            onClick={() => { setShowFullReport(true); setTimeout(() => window.print(), 150); }}
+          >
+            <Printer size={14} /> Print history {repFrom}–{repTo}
+          </button>
+        </div>
+      </div>
+
+      {/* Printable full-history report (prints via window.print; hidden until previewed) */}
+      {showFullReport && (
+        <div className="rlm-printable rlm-card" style={{ marginTop: 16, maxWidth: 800 }}>
+          <div style={{ textAlign: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "#5b6663" }}>BeDa Rooms</div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800 }}>Rental History Report</div>
+            <div style={{ fontSize: 12, color: "#5b6663" }}>
+              January {repFrom} – December {repTo}
+              {businessStart.firstPaid ? ` • First rent accepted ${formatDate(businessStart.firstPaid)}` : ""}
+              {" • "}Generated {formatDate(todayISO())}
+            </div>
+            {settings.landlordName && <div style={{ fontSize: 12 }}>Landlord: {settings.landlordName}{settings.landlordContact ? ` • ${settings.landlordContact}` : ""}</div>}
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12, fontSize: 13 }}>
+            <div><span className="rlm-label">Total collected</span><br /><strong className="rlm-mono" style={{ fontSize: 16 }}>{formatMoney(reportTotal, settings.currency)}</strong></div>
+            <div><span className="rlm-label">Payments</span><br /><strong>{reportHistory.length}</strong></div>
+            <div><span className="rlm-label">Period</span><br /><strong>{repFrom}–{repTo}</strong></div>
+          </div>
+          {reportYears.length > 0 && (
+            <>
+              <h3 style={{ fontSize: 14, margin: "14px 0 6px" }}>Yearly totals</h3>
+              <table className="rlm-table">
+                <thead><tr><th>Year</th><th>Payments</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
+                <tbody>
+                  {reportYears.map(yy => (
+                    <tr key={yy.year}><td>{yy.year}</td><td>{yy.count}</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(yy.total, settings.currency)}</td></tr>
+                  ))}
+                  <tr style={{ fontWeight: 700, background: "#F4F1E7" }}><td>Total {repFrom}–{repTo}</td><td>{reportHistory.length}</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(reportTotal, settings.currency)}</td></tr>
+                </tbody>
+              </table>
+            </>
+          )}
+          {reportTenantTotals.length > 0 && (
+            <>
+              <h3 style={{ fontSize: 14, margin: "14px 0 6px" }}>By tenant ({repFrom}–{repTo})</h3>
+              <table className="rlm-table">
+                <thead><tr><th>Tenant</th><th style={{ textAlign: "right" }}>Total paid</th></tr></thead>
+                <tbody>
+                  {reportTenantTotals.map(([name, amt]) => (
+                    <tr key={name}><td>{name}</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(amt, settings.currency)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+          <h3 style={{ fontSize: 14, margin: "14px 0 6px" }}>All payments (oldest first)</h3>
+          {reportHistory.length === 0 ? (
+            <p style={{ fontSize: 13, color: "#5b6663" }}>No payments in this range.</p>
+          ) : (
+            <table className="rlm-table" style={{ fontSize: 12 }}>
+              <thead><tr><th>Date paid</th><th>Tenant</th><th>Period</th><th style={{ textAlign: "right" }}>Amount</th><th>Method</th></tr></thead>
+              <tbody>
+                {reportHistory.map((h, i) => (
+                  <tr key={h.tenantId + h.periodLabel + i}>
+                    <td className="rlm-mono">{formatDate(h.paidDate)}</td>
+                    <td>{h.tenantName}{h.room ? ` — ${h.room}` : ""}</td>
+                    <td>{h.periodLabel}</td>
+                    <td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(h.amountPaid, settings.currency)}</td>
+                    <td style={{ fontSize: 11 }}>{h.paymentMethod || "—"}</td>
+                  </tr>
+                ))}
+                <tr style={{ fontWeight: 700, background: "#F4F1E7" }}><td colSpan={3}>Total</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(reportTotal, settings.currency)}</td><td /></tr>
+              </tbody>
+            </table>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 40, marginTop: 40, fontSize: 12 }}>
+            <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, textAlign: "center" }}>{settings.landlordName || "Landlord"}<div style={{ fontSize: 10, color: "#5b6663" }}>Prepared by (Landlord)</div></div>
+            <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, textAlign: "center" }}><div style={{ fontSize: 10, color: "#5b6663" }}>Date received / Signature</div></div>
+          </div>
+          <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+            <button className="rlm-btn rlm-btn-primary" onClick={() => window.print()}><Printer size={14} /> Print / Save as PDF</button>
+            <button className="rlm-btn rlm-btn-ghost" onClick={() => setShowFullReport(false)}>Close preview</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 function pwaHint(){ return "Offline-ready PWA"; }
+
+function IdThumb({ path }) {
+  const url = useIdImageUrl(path || "");
+  if (!path) return <span style={{ color: "#999" }}>—</span>;
+  if (!url) return <span style={{ fontSize: 11, color: "#5b6663" }}>…</span>;
+  return (
+    <a href={url} target="_blank" rel="noreferrer" title="Open ID photo">
+      <img src={url} alt="ID" style={{ width: 44, height: 30, objectFit: "cover", borderRadius: 4, border: "1px solid var(--line)", verticalAlign: "middle" }} />
+    </a>
+  );
+}
+
+// ID verification block for printouts (Contract / Invoice / Official Receipt)
+// Shows ID type + number + photo from backend Storage. Photo hidden on screen if not loaded yet,
+// but prints once the signed URL resolves.
+function PrintIdBlock({ tenant, compact = false }) {
+  const url = useIdImageUrl(tenant?.idImagePath || "");
+  const hasId = tenant?.idType || tenant?.idNumber || tenant?.idImagePath;
+  if (!hasId) return null;
+  if (compact) {
+    return (
+      <div style={{ fontSize: 12, marginTop: 4 }}>
+        {tenant.idType || tenant.idNumber ? (
+          <span>ID on file: <strong>{tenant.idType || "ID"}</strong>{tenant.idNumber ? ` — ${tenant.idNumber}` : ""}</span>
+        ) : null}
+        {url && (
+          <img src={url} alt="ID on file" style={{ display: "block", marginTop: 6, width: 180, borderRadius: 4, border: "1px solid var(--line)" }} />
+        )}
+      </div>
+    );
+  }
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "10px 12px", marginTop: 16, fontSize: 13, breakInside: "avoid" }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Tenant ID on file</div>
+      <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div>
+          <div><span className="rlm-label">ID type</span> {tenant.idType || "—"}</div>
+          <div><span className="rlm-label">ID number</span> <span className="rlm-mono">{tenant.idNumber || "—"}</span></div>
+          <div style={{ fontSize: 11, color: "#5b6663", marginTop: 4 }}>Verified against photo on file with landlord.</div>
+        </div>
+        {url ? (
+          <img src={url} alt={`${tenant.name} valid ID`} style={{ width: 220, maxWidth: "100%", borderRadius: 6, border: "1px solid var(--line)", objectFit: "contain", background: "#fff" }} />
+        ) : tenant.idImagePath ? (
+          <span className="no-print" style={{ fontSize: 11, color: "#5b6663" }}>Loading ID photo… (connect online to print photo)</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, confirmDeleteId, setConfirmDeleteId, deleteTenant }) {
   const [query, setQuery] = useState("");
@@ -1781,13 +1989,14 @@ function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, 
             <p style={{ textAlign: "center", padding: "20px 0", color: "#5b6663" }}>{tenants.length===0 ? "No tenants added yet." : `No tenants match "${query}"`}</p>
           ) : (
             <table className="rlm-table">
-              <thead><tr><th>Room</th><th>Name</th><th>ID no.</th><th>Address</th><th>Rent</th><th>Recurring</th><th>Advance / deposit</th><th>Schedule</th><th></th></tr></thead>
+              <thead><tr><th>Room</th><th>Name</th><th>ID</th><th>ID photo</th><th>Address</th><th>Rent</th><th>Recurring</th><th>Advance / deposit</th><th>Schedule</th><th></th></tr></thead>
               <tbody>
                 {filtered.map(t => (
                   <tr key={t.id}>
                     <td style={{ fontWeight: 600 }}>{t.room || "—"}</td>
                     <td>{t.name}</td>
-                    <td className="rlm-mono">{t.idNumber || "—"}</td>
+                    <td className="rlm-mono" style={{ fontSize: 12 }}>{t.idType ? `${t.idType}: ` : ""}{t.idNumber || "—"}</td>
+                    <td><IdThumb path={t.idImagePath} /></td>
                     <td>{t.address || "—"}</td>
                     <td className="rlm-mono">{formatMoney(t.monthlyRent, settings.currency)}</td>
                     <td style={{ fontSize: 12 }}>
@@ -1818,8 +2027,11 @@ function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, 
 }
 
 function TenantForm({ initial, tenants = [], onSave, onCancel }) {
-  const [form, setForm] = useState(initial || { name: "", room: "", idNumber: "", address: "", contact: "", monthlyRent: "", dueDay: 1, moveInDate: todayISO(), additionalFees: [], submeters: [], depositType: "none", advanceAmount: "", depositAmount: "", depositNotes: "", paymentFrequency: "monthly" });
+  const [form, setForm] = useState(initial || { name: "", room: "", idType: "", idNumber: "", idImagePath: "", address: "", contact: "", monthlyRent: "", dueDay: 1, moveInDate: todayISO(), additionalFees: [], submeters: [], depositType: "none", advanceAmount: "", depositAmount: "", depositNotes: "", paymentFrequency: "monthly" });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const previewUrl = useIdImageUrl(form.idImagePath || "");
   const rentNum = Number(form.monthlyRent);
   const valid = form.name.trim() && form.moveInDate && rentNum > 0;
   const dueDayNum = Number(form.dueDay);
@@ -1851,6 +2063,31 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
     setForm(f => ({ ...f, submeters: f.submeters.filter(x => x.id !== id) }));
   }
 
+  async function handleIdFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setUploadError("");
+    try {
+      const res = await uploadIdImage(file, { phone: form.contact, tenantId: form.id || initial?.id });
+      set("idImagePath", res.path || res.dataUrl || "");
+      if (res.localOnly) setUploadError("Supabase not connected — photo saved on this device only. Connect backend to sync it.");
+    } catch (err) {
+      setUploadError(err.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      try { e.target.value = ""; } catch {}
+    }
+  }
+
+  async function removeIdImage() {
+    const cur = form.idImagePath;
+    set("idImagePath", "");
+    if (cur && !String(cur).startsWith("data:")) {
+      try { await deleteIdImage(cur); } catch {}
+    }
+  }
+
   return (
     <div className="rlm-card" style={{ marginBottom: 24 }}>
       <h3 style={{ fontFamily: "var(--font-display)", marginTop: 0 }}>{initial ? "Edit tenant" : "New tenant"}</h3>
@@ -1871,7 +2108,45 @@ function TenantForm({ initial, tenants = [], onSave, onCancel }) {
             </p>
           )}
         </div>
-        <div className="rlm-field"><label className="rlm-label">ID number</label><input className="rlm-input" value={form.idNumber} onChange={e => set("idNumber", e.target.value)} placeholder="Optional" /></div>
+        <div className="rlm-field">
+          <label className="rlm-label">ID type</label>
+          <select className="rlm-select" value={form.idType || ""} onChange={e => set("idType", e.target.value)}>
+            <option value="">— Select ID type —</option>
+            {ID_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div className="rlm-field"><label className="rlm-label">ID number</label><input className="rlm-input" value={form.idNumber || ""} onChange={e => set("idNumber", e.target.value)} placeholder="ID number" /></div>
+        <div className="rlm-field" style={{ gridColumn: "1 / -1", background: "#F8F6F0", border: "1px dashed #C9C3B0", borderRadius: 6, padding: 12 }}>
+          <label className="rlm-label"><Camera size={13} style={{ verticalAlign: "-2px", marginRight: 4 }} /> Valid ID photo — saved to backend (Supabase Storage)</label>
+          {form.idImagePath ? (
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginTop: 8 }}>
+              {previewUrl ? (
+                <a href={previewUrl} target="_blank" rel="noreferrer" title="Open full size">
+                  <img src={previewUrl} alt="Renter ID" style={{ width: 140, height: 90, objectFit: "cover", borderRadius: 6, border: "1px solid var(--line)" }} />
+                </a>
+              ) : (
+                <div style={{ width: 140, height: 90, display: "flex", alignItems: "center", justifyContent: "center", background: "#EFEDE3", borderRadius: 6, fontSize: 11, color: "#5b6663" }}>Loading preview…</div>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <label className="rlm-btn rlm-btn-ghost" style={{ padding: "6px 10px", cursor: "pointer" }}>
+                  <Upload size={13} /> Replace photo
+                  <input type="file" accept="image/*" capture="environment" hidden onChange={handleIdFile} disabled={uploading} />
+                </label>
+                <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding: "6px 10px", color: "var(--rust)" }} onClick={removeIdImage}><Trash size={13} /> Remove</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginTop: 8 }}>
+              <label className="rlm-btn rlm-btn-ghost" style={{ cursor: "pointer" }}>
+                <Upload size={14} /> {uploading ? "Uploading…" : "Upload ID photo"}
+                <input type="file" accept="image/*" capture="environment" hidden onChange={handleIdFile} disabled={uploading} />
+              </label>
+              <span style={{ fontSize: 11, color: "#5b6663", marginLeft: 8 }}>JPG/PNG/WebP, max 5MB. Stored in private bucket — never lost on browser clear.</span>
+            </div>
+          )}
+          {uploading && <div style={{ fontSize: 12, color: "#5b6663", marginTop: 6 }}>Uploading to backend…</div>}
+          {uploadError && <div style={{ fontSize: 12, color: "var(--rust)", marginTop: 6 }}>{uploadError}</div>}
+        </div>
         <div className="rlm-field" style={{ gridColumn: "1 / -1" }}><label className="rlm-label">Address</label><input className="rlm-input" value={form.address} onChange={e => set("address", e.target.value)} placeholder="Barangay, City" /></div>
         <div className="rlm-field"><label className="rlm-label">Contact number (optional)</label><input className="rlm-input" type="tel" value={form.contact} onChange={e => set("contact", e.target.value)} placeholder="09xx xxx xxxx" /></div>
         <div className="rlm-field"><label className="rlm-label">Monthly rent (total) *</label><input className="rlm-input" type="number" min="0" step="0.01" value={form.monthlyRent} onChange={e => set("monthlyRent", e.target.value)} placeholder="e.g. 4500" required />
@@ -2251,8 +2526,9 @@ function InvoiceTab({ tenants, payments, settings, selectedTenant, selectedTenan
                     <div className="rlm-label">Billed to</div>
                     <div>{selectedTenant.name}{selectedTenant.room ? ` (${selectedTenant.room})` : ""}</div>
                     <div>{selectedTenant.address}</div>
-                    {selectedTenant.idNumber && <div className="rlm-mono" style={{ fontSize: 12 }}>ID: {selectedTenant.idNumber}</div>}
+                    {(selectedTenant.idType || selectedTenant.idNumber) && <div className="rlm-mono" style={{ fontSize: 12 }}>ID: {selectedTenant.idType ? `${selectedTenant.idType} — ` : ""}{selectedTenant.idNumber || "—"}</div>}
                     {selectedTenant.contact && <div style={{ fontSize:12 }}>{selectedTenant.contact}</div>}
+                    <PrintIdBlock tenant={selectedTenant} compact />
                   </div>
                 </div>
 
@@ -2357,6 +2633,7 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
               <div style={{ background:"#F4F1E7", border:"1px solid var(--line)", borderRadius:6, padding:"10px 14px", marginBottom:14, fontSize:14 }}>
                 <div><span className="rlm-label">Received from</span> <strong>{selectedTenant.name}</strong>{selectedTenant.room ? ` — ${selectedTenant.room}` : ""}</div>
                 {selectedTenant.address && <div style={{ fontSize:12, color:"#5b6663" }}>{selectedTenant.address}</div>}
+                {(selectedTenant.idType || selectedTenant.idNumber) && <div style={{ fontSize:12 }}>ID: {selectedTenant.idType ? `${selectedTenant.idType} — ` : ""}{selectedTenant.idNumber || ""}</div>}
                 <div style={{ marginTop:6 }}><span className="rlm-label">Amount</span> <span className="rlm-mono" style={{ fontSize:18, fontWeight:700 }}>{formatMoney(info.amountPaid, settings.currency)}</span> <span style={{ fontSize:12, color:"#5b6663" }}>via {method}</span></div>
                 <div style={{ fontSize:12, fontStyle:"italic", color:"#5b6663", borderTop:"1px dashed var(--line)", marginTop:8, paddingTop:6 }}>{pesoWords(info.amountPaid, settings.currency)}.</div>
               </div>
@@ -2371,6 +2648,7 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
                   <tr style={{ fontWeight:700, background:"#F4F1E7" }}><td>Total paid</td><td className="rlm-mono" style={{ textAlign:"right" }}>{formatMoney(info.amountPaid, settings.currency)}</td></tr>
                 </tbody>
               </table>
+              <PrintIdBlock tenant={selectedTenant} />
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, marginTop:24, fontSize:12 }}>
                 <div style={{ borderTop:"1px solid var(--ink)", paddingTop:6, textAlign:"center" }}>{settings.landlordName || "Authorized Signature"}<div style={{ fontSize:10, color:"#5b6663" }}>Collector / Landlord</div></div>
                 <div style={{ borderTop:"1px solid var(--ink)", paddingTop:6, textAlign:"center" }}>{selectedTenant.name}<div style={{ fontSize:10, color:"#5b6663" }}>Payor</div></div>
@@ -2410,7 +2688,7 @@ function ContractTab({ tenants, settings, selectedTenant, selectedTenantId, setS
 
                 <p>This Room Rental Agreement ("Agreement") is entered into between:</p>
                 <p><strong>Landlord:</strong> {settings.landlordName || "_______________________"}, of {settings.landlordAddress || "_______________________"} ("Landlord"), and</p>
-                <p><strong>Tenant:</strong> {selectedTenant.name}, holder of ID number {selectedTenant.idNumber || "_______________________"}, residing at {selectedTenant.address || "_______________________"} ("Tenant").</p>
+                <p><strong>Tenant:</strong> {selectedTenant.name}, holder of {selectedTenant.idType || "valid ID"} number {selectedTenant.idNumber || "_______________________"}, residing at {selectedTenant.address || "_______________________"} ("Tenant").</p>
 
                 <p><strong>1. Term.</strong> This Agreement covers {selectedTenant.room || "the room assigned to the Tenant"} and takes effect on {formatDate(selectedTenant.moveInDate)}, continuing on a month-to-month basis until terminated by either party in accordance with applicable notice requirements.</p>
                 <p><strong>2. Rent.</strong> {isSemiMonthly(selectedTenant) ? (
@@ -2447,6 +2725,8 @@ function ContractTab({ tenants, settings, selectedTenant, selectedTenantId, setS
                     </>
                   );
                 })()}
+
+                <PrintIdBlock tenant={selectedTenant} />
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 40, marginTop: 48 }}>
                   <div>

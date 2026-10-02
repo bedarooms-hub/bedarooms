@@ -3,8 +3,10 @@ import {
   Home, Calendar, Receipt, Wallet, ShieldCheck, Clock as ClockIcon,
   Wifi, WifiOff, CheckCircle2, AlertTriangle, DoorOpen, User, MapPin, Phone,
   TrendingUp, DollarSign, FileText, RefreshCw, LogOut, QrCode, Send,
-  Smartphone, Banknote, ArrowRight, Zap, Check
+  Smartphone, Banknote, ArrowRight, Zap, Check, KeyRound, Eye, EyeOff
 } from 'lucide-react';
+import { supabase, isSupabaseConfigured } from './supabase.js';
+import { useIdImageUrl } from './idStorage.js';
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const PAD2 = (n) => String(n).padStart(2, "0");
@@ -113,6 +115,94 @@ function getDuePeriod(tenant, payments) {
   return null;
 }
 
+function pwFlagKey(phone) {
+  return `rlm:pw-changed-${String(phone || "").replace(/\D/g, "") || "unknown"}`;
+}
+
+function RenterAccountSettings({ phone, showToast }) {
+  const [newPass, setNewPass] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [isFirstLogin, setIsFirstLogin] = useState(false);
+
+  useEffect(() => {
+    try {
+      setIsFirstLogin(!localStorage.getItem(pwFlagKey(phone)));
+    } catch { setIsFirstLogin(false); }
+  }, [phone]);
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    setMsg("");
+    if (!isSupabaseConfigured || !supabase) { setMsg("Cloud backend not connected — password change needs Supabase. Ask admin to set up .env."); return; }
+    if (newPass.length < 6) { setMsg("New password must be at least 6 characters."); return; }
+    if (newPass !== confirm) { setMsg("Passwords don't match."); return; }
+    setBusy(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPass });
+      if (error) throw error;
+      try { localStorage.setItem(pwFlagKey(phone), "1"); } catch {}
+      setIsFirstLogin(false);
+      setNewPass(""); setConfirm("");
+      setMsg("Password changed ✓ — use your new password next time.");
+      showToast?.("Password changed ✓");
+    } catch (err) {
+      setMsg(err.message || "Could not change password. Re-login and try again.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <section className="rd-card">
+      <div className="rd-card-title"><KeyRound size={18} /> Account Settings</div>
+      {isFirstLogin && (
+        <div style={{ background: "#FFF8E1", border: "1px solid #FFE69C", color: "#664D03", borderRadius: 8, padding: "10px 12px", fontSize: 13, marginBottom: 12 }}>
+          <strong>First login detected</strong> — please change your password below to secure your account. Your phone number is your login.
+        </div>
+      )}
+      <form onSubmit={submit}>
+        <div style={{ display: "grid", gap: 10, maxWidth: 360 }}>
+          <label style={{ fontSize: 12, color: "#5b6663" }}>
+            New password (≥6 chars)
+            <span style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <input
+                type={show ? "text" : "password"}
+                value={newPass}
+                onChange={(e) => setNewPass(e.target.value)}
+                placeholder="Enter new password"
+                style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid #ddd", fontSize: 14 }}
+                autoComplete="new-password"
+              />
+              <button type="button" onClick={() => setShow((s) => !s)} style={{ border: "1px solid #ddd", borderRadius: 6, padding: "0 10px", background: "white", cursor: "pointer" }} aria-label={show ? "Hide password" : "Show password"}>
+                {show ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </span>
+          </label>
+          <label style={{ fontSize: 12, color: "#5b6663" }}>
+            Confirm new password
+            <input
+              type={show ? "text" : "password"}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="Repeat new password"
+              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ddd", fontSize: 14, marginTop: 4 }}
+              autoComplete="new-password"
+            />
+          </label>
+          {msg && <div style={{ fontSize: 13, color: msg.includes("✓") ? "#1a7f37" : "#c0392b" }}>{msg}</div>}
+          <button type="submit" className="rd-action-btn rd-action-btn--primary" disabled={busy} style={{ justifyContent: "center" }}>
+            <KeyRound size={15} /> {busy ? "Changing…" : "Change password"}
+          </button>
+          {!isSupabaseConfigured && (
+            <div style={{ fontSize: 11, color: "#999" }}>Needs cloud connection — local/demo accounts can't change password on server.</div>
+          )}
+        </div>
+      </form>
+    </section>
+  );
+}
+
 export default function RenterDashboard({ tenant, payments = [], settings = {}, onSignOut, isOnline, onPayOnline }) {
   const [showContract, setShowContract] = useState(false);
   const [showPayModal, setShowPayModal] = useState(false);
@@ -126,6 +216,7 @@ export default function RenterDashboard({ tenant, payments = [], settings = {}, 
   const gcashNum = settings.gcashNumber || "09123456789";
   const mayaNum = settings.mayaNumber || "09987654321";
   const currency = settings.currency || "₱";
+  const idImageUrl = useIdImageUrl(tenant?.idImagePath || "");
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
 
@@ -394,8 +485,28 @@ export default function RenterDashboard({ tenant, payments = [], settings = {}, 
             <div className="rd-detail-label"><DollarSign size={12} /> Monthly Rent</div>
             <div className="rd-detail-value">{formatCurrency(tenant.monthlyRent)}</div>
           </div>
+          <div className="rd-detail-item">
+            <div className="rd-detail-label"><FileText size={12} /> Valid ID</div>
+            <div className="rd-detail-value">{tenant.idType ? `${tenant.idType}${tenant.idNumber ? `: ${tenant.idNumber}` : ""}` : (tenant.idNumber || '—')}</div>
+          </div>
+          {tenant.idImagePath && (
+            <div className="rd-detail-item" style={{ gridColumn: "1 / -1" }}>
+              <div className="rd-detail-label">ID Photo (from backend)</div>
+              <div className="rd-detail-value">
+                {idImageUrl ? (
+                  <a href={idImageUrl} target="_blank" rel="noreferrer">
+                    <img src={idImageUrl} alt="My valid ID" style={{ maxWidth: 260, width: "100%", borderRadius: 8, border: "1px solid #e8e4dc" }} />
+                  </a>
+                ) : (
+                  <span style={{ fontSize: 12, color: "#888" }}>Loading ID photo…</span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </section>
+
+      <RenterAccountSettings phone={tenant.contact} showToast={showToast} />
 
       {/* Payment Method Info */}
       <section className="rd-card">
