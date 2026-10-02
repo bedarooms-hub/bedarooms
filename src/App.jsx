@@ -484,10 +484,11 @@ function AuthPanel({ session, showToast }) {
   );
 }
 
-function LoginGate({ session, showToast, saveTenant }) {
+function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
   const [tab, setTab] = useState("admin"); // admin | renter
   const [email, setEmail] = useState(ADMIN_EMAIL);
   const [password, setPassword] = useState("");
+  const [renterEmail, setRenterEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [renterPass, setRenterPass] = useState("");
   const [mode, setMode] = useState("signin");
