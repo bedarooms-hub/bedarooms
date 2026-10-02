@@ -699,14 +699,14 @@ function LoginGate({ session, showToast, saveTenant }) {
             let anonRef = "";
             try { anonRef = JSON.parse(atob(key.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).ref || ""; } catch {}
             if (anonRef && urlRef && anonRef !== urlRef) {
-              return <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", borderRadius:6, padding:10, fontSize:12, marginBottom:12, color:"var(--rust)" }}><strong>.env mismatch:</strong> URL is <code>{urlRef}</code> but anon key is for <code>{anonRef}</code> — will cause <strong>Invalid API key / Failed to fetch</strong>. Copy correct pair from Supabase Dashboard → Settings → API (Project <code>mpyyiacudehygwwoobojx</code>), paste into <code>.env</code>, restart <code>npm run dev</code>. Admin offline login <code>bedakaheart@gmail.com / 202477</code> still works.</div>;
+              return <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", borderRadius:6, padding:10, fontSize:12, marginBottom:12, color:"var(--rust)" }}><strong>.env mismatch:</strong> URL is <code>{urlRef}</code> but anon key is for <code>{anonRef}</code> — will cause <strong>Invalid API key / Failed to fetch</strong>. Copy correct pair from Supabase Dashboard → Settings → API (Project <code>mpyyiacudehygwwoobojx</code>), paste into <code>.env</code>, restart <code>npm run dev</code>. Admin offline login <code>bedarooms@gmail.com</code> still works.</div>;
             }
           } catch {}
           return null;
         })()}
         {tab==="admin" ? (
           <form onSubmit={submitAdmin}>
-            <div className="rlm-field"><label className="rlm-label">Admin Email</label><input className="rlm-input" type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="bedakaheart@gmail.com" autoComplete="email" /></div>
+            <div className="rlm-field"><label className="rlm-label">Admin Email</label><input className="rlm-input" type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="bedarooms@gmail.com" autoComplete="email" /></div>
             <div className="rlm-field"><label className="rlm-label">Password</label><input className="rlm-input" type="password" required value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" autoComplete={mode==="signin"?"current-password":"new-password"} /></div>
             {error && <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", color:"var(--rust)", padding:"8px 10px", borderRadius:4, fontSize:12, marginBottom:10 }}>{error}</div>}
             <button type="submit" className="rlm-btn rlm-btn-primary" style={{ width:"100%", justifyContent:"center", padding:"10px" }} disabled={busy}>{busy ? "Please wait…" : mode==="signup" ? "Create admin account" : "Sign in as Admin"}</button>
@@ -789,7 +789,7 @@ function RenterPortal({ tenants, payments, settings, session, showToast, clearAd
         {!myTenant ? (
           <div className="rlm-card" style={{ borderColor:"var(--rust)" }}>
             <h2 style={{ marginTop:0 }}>No tenant found for {phone ? formatPhone(phone) : "your phone"}</h2>
-            <p style={{ fontSize:13, color:"#5b6663" }}>Your phone isn’t linked to any tenant yet. Ask the owner (bedakaheart@gmail.com) to set your <strong>Contact number</strong> in Tenants → Edit to match this phone. Then reload.</p>
+            <p style={{ fontSize:13, color:"#5b6663" }}>Your phone isn’t linked to any tenant yet. Ask the owner (bedarooms@gmail.com) to set your <strong>Contact number</strong> in Tenants → Edit to match this phone. Then reload.</p>
             <p style={{ fontSize:12, color:"#5b6663" }}>Checked {tenants.length} tenant(s). Ensure Contact is digits only, e.g., 09xx xxx xxxx.</p>
             <button className="rlm-btn rlm-btn-ghost" onClick={()=>window.location.reload()}><RefreshCw size={14}/> Reload</button>
           </div>
