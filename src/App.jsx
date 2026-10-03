@@ -415,7 +415,6 @@ function useSWUpdate() {
 }
 
 const ADMIN_EMAIL = "bedarooms@gmail.com";
-const ADMIN_PASS = "Bhingdan7*";
 const ADMIN_KEY = "rlm:admin-auth";
 const RENTER_KEY = "rlm:renter-auth";
 function phoneToEmail(phone){ const d=String(phone).replace(/\D/g,""); return `r${d}@renter.beda-rooms.local`; }
@@ -577,23 +576,9 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
     const eTrim = String(email).trim().toLowerCase();
     const pTrim = String(password).trim();
     if (!eTrim || !pTrim) { setError("Enter email and password"); return; }
-    // Hardcoded owner bypass always works offline (fixes admin offline login not working after renter session / Supabase misconfig)
-    if (eTrim === ADMIN_EMAIL && pTrim === ADMIN_PASS) {
-      try {
-        // clear any previous renter/cloud session so admin-local wins (fixes bug where renter session blocks admin)
-        // don't hang on Supabase signOut if network is down — timeout quickly
-        try { await Promise.race([window.storage.signOut().catch(()=>{}), new Promise(r=>setTimeout(r, 800))]); } catch {}
-        localStorage.removeItem(RENTER_KEY);
-        localStorage.removeItem(TAB_KEY);
-        localStorage.removeItem("rlm:renter-creds");
-        localStorage.setItem(ADMIN_KEY, ADMIN_EMAIL);
-      } catch {}
-      // optional cloud sync — ignore failure (hardcoded admin works offline)
-      if (cloudEnabled && supabase) window.storage.signIn(email, password).catch(()=>{});
-      showToast("Admin access granted (offline)");
-      window.location.reload();
-      return;
-    }
+    // Supabase-first: admin ALWAYS signs in with Supabase so tenants/photos save
+    // to the backend. There is no offline admin password anymore.
+    if (!cloudEnabled || !supabase) { setError("Supabase not connected — set VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY in .env, then restart (npm run dev)."); return; }
     // normalize for Supabase (case-insensitive email)
     const normalizedEmail = String(email).trim().toLowerCase();
     if (password.length < 6) { setError("Password must be at least 6 characters"); return; }
@@ -621,10 +606,10 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
     } catch (err) {
       const m = (err.message||"").toLowerCase();
       const raw = err.message || "Auth failed";
-      if (isNetworkError(raw)) setError("Failed to fetch — cannot reach Supabase. VITE_SUPABASE_URL is " + (import.meta.env.VITE_SUPABASE_URL || "missing") + ". Copy correct URL + anon key from Dashboard → Settings → API (Project mpyyiacudehygwwoobojx) then restart dev server (npm run dev). Tip: owner can still sign in with bedarooms@gmail.com offline.");
-      else if (isKeyError(raw)) setError("Invalid API key — .env URL/key mismatch. Your Project URL is https://mpyyiacudehygwwoobojx.supabase.co — copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server. Owner offline login still works: bedarooms@gmail.com");
-      else if (m.includes("email not confirmed")) setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or confirm the user in Dashboard → Auth → Users. Or use offline owner login bedarooms@gmail.com.");
-      else if (m.includes("invalid login") || m.includes("invalid credentials")) setError("Invalid email or password. If you just created the account, sign in again or disable email confirmation. Owner offline: bedarooms@gmail.com");
+      if (isNetworkError(raw)) setError("Failed to fetch — cannot reach Supabase. VITE_SUPABASE_URL is " + (import.meta.env.VITE_SUPABASE_URL || "missing") + ". Copy correct URL + anon key from Dashboard → Settings → API, then restart dev server (npm run dev).");
+      else if (isKeyError(raw)) setError("Invalid API key — .env URL/key mismatch. Copy BOTH Project URL and anon public key from Dashboard → Settings → API, paste into .env, then restart dev server.");
+      else if (m.includes("email not confirmed")) setError("Email not confirmed — disable Confirm email in Dashboard → Auth → Configuration → Email, or confirm the user in Dashboard → Auth → Users.");
+      else if (m.includes("invalid login") || m.includes("invalid credentials")) setError("Invalid email or password. If you just created the account, sign in again or disable email confirmation in Supabase Auth settings.");
       else setError(raw);
     }
     finally { setBusy(false); }
