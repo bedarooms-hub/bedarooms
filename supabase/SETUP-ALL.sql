@@ -69,6 +69,21 @@ create policy "rental_data self" on public.rental_data
 
 -- Renters (role='renter' in user_metadata, or legacy r{phone}@renter.beda-rooms.local)
 -- can READ the admin's row so they see their own tenant record.
+-- NOTE: the admin lookup MUST go through public.admin_user_id() (SECURITY
+-- DEFINER). A raw subquery on auth.users here makes EVERY rental_data read
+-- fail with "permission denied for table users" for all app roles.
+create or replace function public.admin_user_id()
+returns uuid
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select id from auth.users where email = 'bedarooms@gmail.com' limit 1
+$$;
+
+grant execute on function public.admin_user_id() to anon, authenticated;
+
 drop policy if exists "rental_data renter read admin" on public.rental_data;
 create policy "rental_data renter read admin" on public.rental_data
   for select using (
@@ -78,7 +93,7 @@ create policy "rental_data renter read admin" on public.rental_data
         (auth.jwt() ->> 'email') like '%@renter.beda-rooms.local'
         or (auth.jwt() -> 'user_metadata' ->> 'role') = 'renter'
       )
-      and user_id = (select id from auth.users where email = 'bedarooms@gmail.com' limit 1)
+      and user_id = public.admin_user_id()
     )
   );
 
