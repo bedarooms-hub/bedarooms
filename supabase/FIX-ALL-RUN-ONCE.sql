@@ -43,10 +43,10 @@ create policy "rental_data renter read admin" on public.rental_data
   );
 
 -- ---------- 3) VERIFY (must return rows, no errors) ----------
-select tablename, grantee
+select table_name, grantee
 from information_schema.role_table_grants
 where table_schema = 'public'
-  and tablename = 'rental_data'
+  and table_name = 'rental_data'
   and grantee in ('anon', 'authenticated');
 
 select proname as function_name from pg_proc

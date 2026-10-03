@@ -11,9 +11,9 @@ grant all on public.profiles to anon, authenticated;
 grant all on public.contract_signatures to anon, authenticated;
 
 -- ---------- VERIFY (must return rows, no errors) ----------
-select tablename, grantee, privilege_type
+select table_name, grantee, privilege_type
 from information_schema.role_table_grants
 where table_schema = 'public'
-  and tablename in ('rental_data', 'profiles', 'contract_signatures')
+  and table_name in ('rental_data', 'profiles', 'contract_signatures')
   and grantee in ('anon', 'authenticated')
-order by tablename, grantee;
+order by table_name, grantee;
