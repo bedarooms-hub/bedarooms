@@ -440,28 +440,23 @@ function useSupabaseAuth() {
   const [authLoading, setAuthLoading] = useState(true);
   const cloudEnabled = typeof window !== "undefined" && window.storage?.isCloudEnabled;
   useEffect(() => {
-    // hardcoded gates take priority (fixes admin offline login not working after renter session)
-    const localAdmin = (()=>{ try{ return localStorage.getItem(ADMIN_KEY); }catch{return null}})();
-    if (localAdmin === ADMIN_EMAIL) {
-      setSession({ user: { email: ADMIN_EMAIL, id: "admin-local" } });
-      setAuthLoading(false);
-      return;
-    }
-    const localRenter = (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"null"); }catch{return null}})();
-    if (localRenter?.phone || localRenter?.email) {
-      const em = localRenter.email || (localRenter.phone ? phoneToEmail(localRenter.phone) : "");
-      setSession({ user: { email: em, id: "renter-local", phone: localRenter.phone || "", user_metadata: { role: "renter", phone: localRenter.phone || "" } } });
-      setAuthLoading(false);
-      return;
-    }
     if (!cloudEnabled) { setAuthLoading(false); return; }
     let mounted = true;
+    // Supabase session is the single source of truth — there is no offline admin
+    // bypass anymore, so every admin login syncs tenants/photos to the backend.
+    // A stale renter gate from an old offline login is honored as Local mode only.
+    const localRenter = (()=>{ try{ return JSON.parse(localStorage.getItem(RENTER_KEY)||"null"); }catch{return null}})();
     window.storage.getSession().then(s => {
       if (!mounted) return;
       if (s) {
         if (s.user?.user_metadata?.phone && !s.user.phone) s.user.phone = s.user.user_metadata.phone;
         setSession(s);
+      } else if (localRenter?.phone || localRenter?.email) {
+        const em = localRenter.email || (localRenter.phone ? phoneToEmail(localRenter.phone) : "");
+        setSession({ user: { email: em, id: "renter-local", phone: localRenter.phone || "", user_metadata: { role: "renter", phone: localRenter.phone || "" } } });
       } else {
+        // stale admin gate from the old offline bypass grants nothing — clear it
+        try { localStorage.removeItem(ADMIN_KEY); } catch {}
         setSession(null);
       }
       setAuthLoading(false);
@@ -470,21 +465,10 @@ function useSupabaseAuth() {
       if (!mounted) return;
       if (s?.user?.user_metadata?.phone && !s.user.phone) s.user.phone = s.user.user_metadata.phone;
       if (s) {
-        // if admin gate was set, keep it (admin bypass)
-        const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
-        if (la === ADMIN_EMAIL) return;
         setSession(s);
       } else {
-        // signed out in cloud -> clear stale gates BUT preserve hardcoded admin (offline login)
-        const la = (()=>{ try{ return localStorage.getItem(ADMIN_KEY);}catch{return null}})();
-        if (la === ADMIN_EMAIL) return;
         try { localStorage.removeItem(RENTER_KEY); } catch {}
-        // don't wipe ADMIN_KEY if it's the hardcoded admin — it must survive Supabase signOut
-        // only clear RENTER_KEY and let UI stay on admin if needed
-        setSession(prev => {
-          if (prev?.user?.id === "admin-local") return prev;
-          return null;
-        });
+        setSession(null);
       }
     });
     return () => { mounted = false; unsub?.(); };
