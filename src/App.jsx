@@ -3,7 +3,7 @@ import {
   Users, Receipt, FileText, Settings as SettingsIcon, LayoutDashboard,
   Plus, Trash2, Pencil, Printer, CheckCircle2, AlertTriangle, Clock, X, Undo2, Download,
   Menu, Search, Upload, WifiOff, Smartphone, RefreshCw, LogOut, Home,
-  Copy, Mail, MessageSquareText, Send, RotateCcw, ChevronDown, Camera, Trash
+  Copy, Mail, MessageSquareText, Send, RotateCcw, ChevronDown, Camera, Trash, Wallet
 } from "lucide-react";
 import { supabase } from "./supabase.js";
 import RenterDashboard from "./RenterDashboard.jsx";
@@ -1098,7 +1098,7 @@ export default function RoomRentalManager() {
   const [tab, setTab] = useState(() => {
     const hash = (typeof location !== "undefined" && location.hash.replace("#","")) || "";
     const ls = (()=>{ try{ return localStorage.getItem(TAB_KEY);}catch{return null}})();
-    const valid = ["dashboard","tenants","payments","invoice","receipt","contract","settings"];
+    const valid = ["dashboard","tenants","payments","invoice","receipt","movein","contract","settings"];
     if (valid.includes(hash)) return hash;
     if (valid.includes(ls)) return ls;
     return "dashboard";
@@ -1124,7 +1124,7 @@ export default function RoomRentalManager() {
   }, [tab]);
   // handle browser back/forward hash
   useEffect(()=>{
-    const onHash=()=>{ const h=location.hash.replace("#",""); const valid=["dashboard","tenants","payments","invoice","receipt","contract","settings"]; if(valid.includes(h)) setTab(h); };
+    const onHash=()=>{ const h=location.hash.replace("#",""); const valid=["dashboard","tenants","payments","invoice","receipt","movein","contract","settings"]; if(valid.includes(h)) setTab(h); };
     window.addEventListener("hashchange", onHash); return ()=>window.removeEventListener("hashchange", onHash);
   },[]);
 
@@ -1353,6 +1353,7 @@ export default function RoomRentalManager() {
     { id: "payments", label: "Payments", Icon: Receipt },
     { id: "invoice", label: "Invoice", Icon: FileText },
     { id: "receipt", label: "Official Receipt", Icon: Receipt },
+    { id: "movein", label: "Deposit / Advance", Icon: Wallet },
     { id: "contract", label: "Contract", Icon: FileText },
     { id: "settings", label: "Settings", Icon: SettingsIcon },
   ];
@@ -1586,6 +1587,13 @@ export default function RoomRentalManager() {
           />
         )}
 
+        {tab === "movein" && (
+          <MoveinTab
+            tenants={tenants} settings={settings}
+            selectedTenant={selectedTenant} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId}
+            onSaveTenant={saveTenant} showToast={showToast}
+          />
+        )}
         {tab === "contract" && (
           <ContractTab
             tenants={tenants} settings={settings}
@@ -2893,6 +2901,59 @@ function MoveinReceiptDoc({ tenant, kind, settings }) {
         <button className="rlm-btn rlm-btn-primary" onClick={() => window.print()}><Printer size={15} /> Print / Save as PDF</button>
       </div>
     </>
+  );
+}
+
+// Admin one-stop tab for UPFRONT paperwork: record the advance/deposit the moment
+// money is received (even before the first due date) and hand the renter a printed
+// invoice + Official Receipt on the spot. (The rental contract separately states the
+// advance/deposit obligation — this tab is the proof of payment.)
+function MoveinTab({ tenants, settings, selectedTenant, selectedTenantId, setSelectedTenantId, onSaveTenant, showToast }) {
+  const kinds = moveinKindsFor(selectedTenant);
+  const [views, setViews] = useState({}); // kind -> 'invoice' | 'receipt'
+  const viewFor = (k) => views[k] || "invoice";
+  return (
+    <div>
+      <h1 className="rlm-h1 no-print">Deposit / Advance</h1>
+      <p className="rlm-sub no-print">Upfront paperwork for money received before the first due date — record the receipt, then print the invoice and Official Receipt to hand to the renter.</p>
+      {tenants.length === 0 ? (
+        <div className="rlm-card"><p style={{ margin: 0 }}>Add a tenant first.</p></div>
+      ) : (
+        <>
+          <div className="no-print" style={{ marginBottom: 16 }}>
+            <TenantPicker tenants={tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />
+          </div>
+          {selectedTenant && kinds.length === 0 && (
+            <div className="rlm-card"><p style={{ margin: 0 }}>No advance/deposit configured for <strong>{selectedTenant.name}</strong> — set it in Tenants → Edit tenant → Advance / deposit on move-in.</p></div>
+          )}
+          {selectedTenant && kinds.length > 0 && (
+            <>
+              <AdvanceDepositPanel tenant={selectedTenant} settings={settings} onSaveTenant={onSaveTenant} showToast={showToast} />
+              {kinds.map(kind => {
+                const rec = moveinReceipt(selectedTenant, kind);
+                const v = viewFor(kind);
+                return (
+                  <div key={kind} className="rlm-card" style={{ marginBottom: 16 }}>
+                    <div className="no-print" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                      <strong style={{ fontSize: 15 }}>{MOVEIN_KINDS[kind].label} {rec
+                        ? <span style={{ fontSize: 12, fontWeight: 700, color: "var(--green)" }}>✓ RECEIVED</span>
+                        : <span style={{ fontSize: 12, fontWeight: 700, color: "var(--brass)" }}>○ PENDING</span>}</strong>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" className={v === "invoice" ? "rlm-btn rlm-btn-primary" : "rlm-btn rlm-btn-ghost"} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => setViews(s => ({ ...s, [kind]: "invoice" }))}><FileText size={13} /> Invoice</button>
+                        <button type="button" className={v === "receipt" ? "rlm-btn rlm-btn-primary" : "rlm-btn rlm-btn-ghost"} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => setViews(s => ({ ...s, [kind]: "receipt" }))}><Receipt size={13} /> O.R.</button>
+                      </div>
+                    </div>
+                    {v === "invoice"
+                      ? <MoveinInvoiceDoc tenant={selectedTenant} kind={kind} settings={settings} />
+                      : <MoveinReceiptDoc tenant={selectedTenant} kind={kind} settings={settings} />}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
