@@ -841,7 +841,7 @@ function LoginGate({ session, showToast, saveTenant, tenants = [] }) {
             let anonRef = "";
             try { anonRef = JSON.parse(atob(key.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).ref || ""; } catch {}
             if (anonRef && urlRef && anonRef !== urlRef) {
-              return <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", borderRadius:6, padding:10, fontSize:12, marginBottom:12, color:"var(--rust)" }}><strong>.env mismatch:</strong> URL is <code>{urlRef}</code> but anon key is for <code>{anonRef}</code> — will cause <strong>Invalid API key / Failed to fetch</strong>. Copy correct pair from Supabase Dashboard → Settings → API (Project <code>mpyyiacudehygwwoobojx</code>), paste into <code>.env</code>, restart <code>npm run dev</code>. Admin offline login <code>bedarooms@gmail.com</code> still works.</div>;
+              return <div style={{ background:"#F6E3DE", border:"1px solid var(--rust)", borderRadius:6, padding:10, fontSize:12, marginBottom:12, color:"var(--rust)" }}><strong>.env mismatch:</strong> URL is <code>{urlRef}</code> but anon key is for <code>{anonRef}</code> — will cause <strong>Invalid API key / Failed to fetch</strong>. Copy correct pair from Supabase Dashboard → Settings → API (Project <code>mpyyiacudehygwwoobojx</code>), paste into <code>.env</code>, restart <code>npm run dev</code>. Admin sign-in requires Supabase — create the user in Dashboard → Auth → Users first.</div>;
             }
           } catch {}
           return null;
