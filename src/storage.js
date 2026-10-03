@@ -194,13 +194,17 @@ window.storage = {
     return data;
   },
   async signOut() {
-    // Always clear local gates immediately so UI can respond even if network hangs
+    // Always clear local gates immediately so UI can respond even if network hangs.
+    // NOTE: never delete tenant data here (rlm:user:/rlm:shared: keys) — signing out
+    // must not destroy unsynced records. Only auth gates + Supabase tokens are removed.
     const clearLocal = () => {
       try {
         localStorage.removeItem("rlm:admin-auth");
         localStorage.removeItem("rlm:renter-auth");
-        // also clear any rlm:* mirror and Supabase sb-* tokens
-        Object.keys(localStorage).forEach(k => { if (k.startsWith(PREFIX) || k.startsWith("sb-")) localStorage.removeItem(k); });
+        localStorage.removeItem("rlm:renter-creds");
+        localStorage.removeItem("rlm:last-tab");
+        // Supabase auth tokens
+        Object.keys(localStorage).forEach(k => { if (k.startsWith("sb-")) localStorage.removeItem(k); });
         sessionStorage.clear();
       } catch {}
     };

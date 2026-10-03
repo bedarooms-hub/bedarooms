@@ -491,20 +491,14 @@ function useSupabaseAuth() {
   }, [cloudEnabled]);
   const clearAdmin = async () => {
     try{
+      // Sign out = remove login gates + Supabase tokens only.
+      // NEVER wipe tenant data (rlm:user:/rlm:shared:) here — unsynced records must survive logout.
       localStorage.removeItem(ADMIN_KEY);
       localStorage.removeItem(RENTER_KEY);
       localStorage.removeItem(TAB_KEY);
-      // clear rlm cache so next window is clean
-      Object.keys(localStorage).forEach(k=>{ if(k.startsWith("rlm:")||k.startsWith("sb-")) localStorage.removeItem(k); });
+      localStorage.removeItem("rlm:renter-creds");
+      Object.keys(localStorage).forEach(k=>{ if(k.startsWith("sb-")) localStorage.removeItem(k); });
       sessionStorage.clear();
-      if ("caches" in window) {
-        const names = await caches.keys();
-        await Promise.all(names.map(n=>caches.delete(n)));
-      }
-      if ("serviceWorker" in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.map(r=>r.unregister()));
-      }
     }catch{}
     setSession(null);
   };
