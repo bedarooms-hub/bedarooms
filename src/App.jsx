@@ -227,6 +227,33 @@ function depositSummary(tenant, currency) {
   if (type === "deposit" || type === "both") parts.push(`Deposit ${formatMoney(tenant.depositAmount, currency)}`);
   return parts.join(" + ");
 }
+// --- Move-in advance/deposit receipts (issuable any time, e.g. before the first due date) ---
+// Stored on the tenant record: tenant.advanceReceipt / tenant.depositReceipt
+// Shape: { amount: number, date: "YYYY-MM-DD", method: "Cash"|"GCash"|"Bank Transfer"|"Check", orNo: "" }
+const MOVEIN_KINDS = {
+  advance: { label: "1 Month Advance", short: "ADV", blurb: "Non-refundable but consumable — applied as payment for the last month of stay." },
+  deposit: { label: "1 Month Security Deposit", short: "DEP", blurb: "Non-refundable in cash but consumable — applied to final dues, charges, damages and cleaning fee on move-out." },
+};
+function moveinKindsFor(tenant) {
+  const t = tenant?.depositType || "none";
+  if (t === "advance") return ["advance"];
+  if (t === "deposit") return ["deposit"];
+  if (t === "both" || t === "custom") return ["advance", "deposit"];
+  return [];
+}
+function moveinConfiguredAmount(tenant, kind) {
+  if (kind === "advance") return Number(tenant?.advanceAmount) || Number(tenant?.monthlyRent) || 0;
+  return Number(tenant?.depositAmount) || Number(tenant?.monthlyRent) || 0;
+}
+function moveinReceipt(tenant, kind) {
+  const r = kind === "advance" ? tenant?.advanceReceipt : tenant?.depositReceipt;
+  return r && r.amount > 0 && r.date ? r : null;
+}
+function moveinReceiptSummary(tenant, kind, currency) {
+  const r = moveinReceipt(tenant, kind);
+  if (!r) return "Not yet received";
+  return `Received ${formatMoney(r.amount, currency)} on ${formatDate(r.date)}${r.method ? ` via ${r.method}` : ""}${r.orNo ? ` (${r.orNo})` : ""}`;
+}
 function halfLabel(half) { return half === "a" ? "15th" : half === "b" ? "30th" : ""; }
 // Stable stringify (sorted keys) for comparing snapshots regardless of key order
 function stableStringify(o) {
@@ -964,7 +991,12 @@ function RenterPortal({ tenants, payments, settings, session, showToast, clearAd
                   <div style={{ gridColumn:"1 / -1" }}><div className="rlm-label">Address</div>{myTenant.address || "—"}</div>
                   <div><div className="rlm-label">Monthly Rent</div><span className="rlm-mono">{formatMoney(myTenant.monthlyRent, settings.currency)}</span></div>
                   <div><div className="rlm-label">Room</div>{myTenant.room || "—"}</div>
-                  <div><div className="rlm-label">Advance / Deposit</div>{depositSummary(myTenant, settings.currency)}</div>
+                  <div><div className="rlm-label">Advance / Deposit</div>{depositSummary(myTenant, settings.currency)}
+                    {moveinKindsFor(myTenant).map(k => {
+                      const r = moveinReceipt(myTenant, k);
+                      return r ? <div key={k} style={{ fontSize: 12, color: "var(--green)" }}>✓ {MOVEIN_KINDS[k].label} received {formatDate(r.date)}</div> : null;
+                    })}
+                  </div>
                   <div><div className="rlm-label">Status</div>{myTenant.paymentFrequency==="semimonthly" ? "Twice a month" : "Monthly"}</div>
                 </div>
               )}
@@ -994,6 +1026,10 @@ function RenterPortal({ tenants, payments, settings, session, showToast, clearAd
                 <p><strong>Tenant:</strong> {myTenant.name} ({myTenant.idNumber || "—"}) — {myTenant.address || ""}</p>
                 <p><strong>Rent:</strong> {isSemiMonthly(myTenant) ? `${formatMoney(myTenant.monthlyRent, settings.currency)}/mo split 15th & 30th` : `${formatMoney(myTenant.monthlyRent, settings.currency)}/mo due ${ordinal(myTenant.dueDay)}`}</p>
                 <p><strong>Advance/Deposit:</strong> {depositSummary(myTenant, settings.currency)}</p>
+                {moveinKindsFor(myTenant).map(k => {
+                  const r = moveinReceipt(myTenant, k);
+                  return r ? <p key={k} style={{ fontSize: 13 }}><strong>{MOVEIN_KINDS[k].label}:</strong> {moveinReceiptSummary(myTenant, k, settings.currency)}</p> : null;
+                })}
                 <p style={{ fontSize:12, color:"#5b6663" }}>This is your copy. Ask owner for signed Official Receipt for each paid period.</p>
                 <button className="rlm-btn rlm-btn-ghost no-print" style={{ marginTop:8 }} onClick={()=>window.print()}><Printer size={14}/> Print contract</button>
               </div>
@@ -1509,6 +1545,7 @@ export default function RoomRentalManager() {
             markPaid={markPaid} undoPaid={undoPaid}
             goInvoice={(key) => { setInvoicePeriodKey(key); setTab("invoice"); }}
             goReceipt={(key) => { setReceiptPeriodKey(key); setTab("receipt"); }}
+            onSaveTenant={saveTenant} showToast={showToast}
           />
         )}
 
@@ -2130,7 +2167,14 @@ function TenantsTab({ tenants, tenantForm, setTenantForm, saveTenant, settings, 
                     <td style={{ fontSize: 12 }}>
                       {(t.additionalFees || []).length === 0 ? "—" : t.additionalFees.map(f => `${f.label} ${formatMoney(f.amount, settings.currency)}`).join(", ")}
                     </td>
-                    <td style={{ fontSize: 12 }}>{depositSummary(t, settings.currency)}</td>
+                    <td style={{ fontSize: 12 }}>{depositSummary(t, settings.currency)}
+                      {moveinKindsFor(t).map(k => {
+                        const r = moveinReceipt(t, k);
+                        return r
+                          ? <div key={k} style={{ color: "var(--green)", fontWeight: 600 }}>✓ {MOVEIN_KINDS[k].short} {formatDate(r.date)}</div>
+                          : <div key={k} style={{ color: "#5b6663" }}>○ {MOVEIN_KINDS[k].short} pending</div>;
+                      })}
+                    </td>
                     <td style={{ fontSize: 12 }}>{isSemiMonthly(t) ? "15th & 30th" : `Due ${ordinal(t.dueDay)}`}</td>
                     <td style={{ whiteSpace: "nowrap" }}>
                       <button className="rlm-btn rlm-btn-ghost" style={{ padding: 6, marginRight: 6 }} onClick={() => setTenantForm(t)} aria-label={`Edit ${t.name}`}><Pencil size={14} /></button>
@@ -2417,7 +2461,86 @@ function TenantPicker({ tenants, selectedTenantId, setSelectedTenantId }) {
   );
 }
 
-function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTenantId, setSelectedTenantId, payingKey, setPayingKey, paymentForm, setPaymentForm, chargesOpenKey, setChargesOpenKey, chargeInput, setChargeInput, addCharge, removeCharge, saveMeterReading, removeMeterReading, notesOpenKey, setNotesOpenKey, noteInput, setNoteInput, saveNote, markPaid, undoPaid, goInvoice, goReceipt }) {
+// Admin panel: record 1-month advance / deposit receipt the moment money is received
+// (works before the first rent due date). Saved on the tenant record, so it syncs
+// via the same cloud blob and is printable from the Invoice / Official Receipt tabs.
+function AdvanceDepositPanel({ tenant, settings, onSaveTenant, showToast }) {
+  const kinds = moveinKindsFor(tenant);
+  const [editing, setEditing] = useState(null); // 'advance' | 'deposit' | null
+  const [form, setForm] = useState({ amount: "", date: todayISO(), method: "Cash", orNo: "" });
+  if (kinds.length === 0) return null;
+  const startEdit = (kind) => {
+    const existing = moveinReceipt(tenant, kind);
+    setForm({
+      amount: existing ? String(existing.amount) : String(moveinConfiguredAmount(tenant, kind) || ""),
+      date: existing?.date || todayISO(),
+      method: existing?.method || "Cash",
+      orNo: existing?.orNo || "",
+    });
+    setEditing(kind);
+  };
+  const saveReceipt = async (kind) => {
+    const amount = Number(form.amount) || 0;
+    if (amount <= 0) { showToast("Enter an amount greater than 0"); return; }
+    if (!form.date) { showToast("Enter the date received"); return; }
+    const receipt = { amount, date: form.date, method: form.method || "Cash", orNo: String(form.orNo || "").trim() };
+    await onSaveTenant({ ...tenant, [kind === "advance" ? "advanceReceipt" : "depositReceipt"]: receipt }, { silent: true });
+    setEditing(null);
+    showToast(`${MOVEIN_KINDS[kind].label} recorded ✓ — printable in Invoice / Official Receipt`);
+  };
+  const clearReceipt = async (kind) => {
+    const key = kind === "advance" ? "advanceReceipt" : "depositReceipt";
+    const updated = { ...tenant };
+    delete updated[key];
+    await onSaveTenant(updated, { silent: true });
+    setEditing(null);
+    showToast(`${MOVEIN_KINDS[kind].label} receipt cleared`);
+  };
+  return (
+    <div className="rlm-card no-print" style={{ marginBottom: 16, borderColor: "var(--brass)" }}>
+      <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>Advance / Deposit — record receipt</h3>
+      <p style={{ fontSize: 12, color: "#5b6663", marginTop: -6 }}>Issue any time — even before the first due date. Once recorded, print the invoice or Official Receipt from the Invoice / Official Receipt tabs.</p>
+      {kinds.map(kind => {
+        const rec = moveinReceipt(tenant, kind);
+        const isEditing = editing === kind;
+        return (
+          <div key={kind} style={{ borderTop: "1px solid var(--line)", paddingTop: 10, marginTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <strong style={{ fontSize: 14 }}>{MOVEIN_KINDS[kind].label} <span style={{ fontWeight: 400, color: "#5b6663" }}>({formatMoney(moveinConfiguredAmount(tenant, kind), settings.currency)})</span></strong>
+              {rec
+                ? <span style={{ fontSize: 12, fontWeight: 700, color: "var(--green)" }}><CheckCircle2 size={13} style={{ verticalAlign: "-2px" }} /> RECEIVED</span>
+                : <span style={{ fontSize: 12, fontWeight: 700, color: "var(--brass)" }}><Clock size={13} style={{ verticalAlign: "-2px" }} /> PENDING</span>}
+            </div>
+            {rec && !isEditing && <div style={{ fontSize: 13, marginTop: 4 }}>{moveinReceiptSummary(tenant, kind, settings.currency)}</div>}
+            {isEditing ? (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                <div className="rlm-field" style={{ flex: "1 1 120px", marginBottom: 0 }}><label className="rlm-label">Amount received *</label><input className="rlm-input" type="number" min="0" step="0.01" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} /></div>
+                <div className="rlm-field" style={{ flex: "1 1 130px", marginBottom: 0 }}><label className="rlm-label">Date received *</label><input className="rlm-input" type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} /></div>
+                <div className="rlm-field" style={{ flex: "1 1 120px", marginBottom: 0 }}><label className="rlm-label">Method</label>
+                  <select className="rlm-select" value={form.method} onChange={e => setForm(f => ({ ...f, method: e.target.value }))}>
+                    <option>Cash</option><option>GCash</option><option>Bank Transfer</option><option>Check</option>
+                  </select>
+                </div>
+                <div className="rlm-field" style={{ flex: "1 1 130px", marginBottom: 0 }}><label className="rlm-label">OR No. (optional)</label><input className="rlm-input" value={form.orNo} onChange={e => setForm(f => ({ ...f, orNo: e.target.value }))} placeholder="OR-2026-0001" /></div>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                  <button type="button" className="rlm-btn rlm-btn-primary" style={{ padding: "8px 12px" }} onClick={() => saveReceipt(kind)}>Save receipt</button>
+                  <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding: "8px 12px" }} onClick={() => setEditing(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding: "6px 10px" }} onClick={() => startEdit(kind)}><Pencil size={13} /> {rec ? "Edit receipt" : "Record receipt"}</button>
+                {rec && <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding: "6px 10px", color: "var(--rust)" }} onClick={() => clearReceipt(kind)}><Trash2 size={13} /> Clear</button>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTenantId, setSelectedTenantId, payingKey, setPayingKey, paymentForm, setPaymentForm, chargesOpenKey, setChargesOpenKey, chargeInput, setChargeInput, addCharge, removeCharge, saveMeterReading, removeMeterReading, notesOpenKey, setNotesOpenKey, noteInput, setNoteInput, saveNote, markPaid, undoPaid, goInvoice, goReceipt, onSaveTenant, showToast }) {
   const periods = selectedTenant ? getPeriodsForTenant(selectedTenant) : [];
   const submeters = selectedTenant?.submeters || [];
   const [meterInputs, setMeterInputs] = useState({});
@@ -2459,6 +2582,7 @@ function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTena
           <TenantPicker tenants={tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />
           {selectedTenant && (
             <>
+              <AdvanceDepositPanel tenant={selectedTenant} settings={settings} onSaveTenant={onSaveTenant} showToast={showToast} />
               <div style={{ display:"flex", gap:8, margin:"8px 0 12px", flexWrap:"wrap" }} className="no-print">
                 {[
                   {id:"all", label:"All"},
@@ -2629,11 +2753,136 @@ function PaymentsTab({ tenants, payments, settings, selectedTenant, selectedTena
   );
 }
 
+// Printable INVOICE for a 1-month advance / security deposit — no rent period needed,
+// so admin can bill it the moment money is received, even before the first due date.
+function MoveinInvoiceDoc({ tenant, kind, settings }) {
+  const cfg = MOVEIN_KINDS[kind];
+  const rec = moveinReceipt(tenant, kind);
+  const amount = rec ? rec.amount : moveinConfiguredAmount(tenant, kind);
+  const paid = rec ? rec.amount : 0;
+  const balance = Math.max(amount - paid, 0);
+  const docDate = rec?.date || todayISO();
+  return (
+    <>
+      <div className="rlm-printable rlm-card" style={{ maxWidth: 640 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid var(--ink)", paddingBottom: 16, marginBottom: 20 }}>
+          <div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700 }}>INVOICE</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{cfg.label}</div>
+            <div className="rlm-mono" style={{ fontSize: 12, color: "#5b6663" }}>No. {String(tenant.id || "").toUpperCase().slice(0, 6)}-{cfg.short}</div>
+            <div className="rlm-mono" style={{ fontSize: 11, color: "#5b6663" }}>{formatDate(docDate)}</div>
+          </div>
+          <StatusStamp status={rec ? "paid" : "due"} />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20, fontSize: 14 }}>
+          <div>
+            <div className="rlm-label">From</div>
+            <div>{settings.landlordName || "—"}</div>
+            <div>{settings.landlordAddress || ""}</div>
+            <div>{settings.landlordContact || ""}</div>
+          </div>
+          <div>
+            <div className="rlm-label">Billed to</div>
+            <div>{tenant.name}{tenant.room ? ` (${tenant.room})` : ""}</div>
+            <div>{tenant.address}</div>
+            {(tenant.idType || tenant.idNumber) && <div className="rlm-mono" style={{ fontSize: 12 }}>ID: {tenant.idType ? `${tenant.idType} — ` : ""}{tenant.idNumber || "—"}</div>}
+            {tenant.contact && <div style={{ fontSize: 12 }}>{tenant.contact}</div>}
+            <PrintIdBlock tenant={tenant} compact />
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 20, marginBottom: 20, fontSize: 14, flexWrap: "wrap" }}>
+          <div><div className="rlm-label">Date {rec ? "received" : "issued"}</div>{formatDate(docDate)}</div>
+          {rec && <div><div className="rlm-label">Method</div>{rec.method || "—"}</div>}
+          {rec?.orNo && <div><div className="rlm-label">OR No.</div><span className="rlm-mono">{rec.orNo}</span></div>}
+        </div>
+        <table className="rlm-table" style={{ marginBottom: 16 }}>
+          <thead><tr><th>Description</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead>
+          <tbody>
+            <tr><td>{cfg.label}<div style={{ fontSize: 11, color: "#5b6663" }}>{cfg.blurb}</div></td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(amount, settings.currency)}</td></tr>
+            <tr><td style={{ fontWeight: 600 }}>Total due</td><td className="rlm-mono" style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(amount, settings.currency)}</td></tr>
+            <tr><td>Amount paid</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(paid, settings.currency)}</td></tr>
+            <tr><td style={{ fontWeight: 600 }}>Balance</td><td className="rlm-mono" style={{ textAlign: "right", fontWeight: 600, color: balance > 0 ? "var(--rust)" : "var(--green)" }}>{formatMoney(balance, settings.currency)}</td></tr>
+          </tbody>
+        </table>
+        <p style={{ fontSize: 12, color: "#5b6663" }}>This invoice is system-generated and serves as an official record of the {cfg.label.toLowerCase()} {rec ? "received" : "due"}. {cfg.blurb}</p>
+      </div>
+      <button className="no-print rlm-btn rlm-btn-primary" style={{ marginTop: 16 }} onClick={() => window.print()}><Printer size={15} /> Print / Save as PDF</button>
+    </>
+  );
+}
+
+// Printable OFFICIAL RECEIPT for a 1-month advance / security deposit — only when recorded.
+function MoveinReceiptDoc({ tenant, kind, settings }) {
+  const cfg = MOVEIN_KINDS[kind];
+  const rec = moveinReceipt(tenant, kind);
+  const [orNo, setOrNo] = useState(rec?.orNo || `OR-${cfg.short}-${String(tenant.id || "").slice(0, 4).toUpperCase()}`);
+  const [method, setMethod] = useState(rec?.method || "Cash");
+  if (!rec) {
+    return (
+      <div className="rlm-card" style={{ maxWidth: 640, borderColor: "var(--rust)" }}>
+        <p style={{ margin: 0, color: "var(--rust)" }}>No {cfg.label.toLowerCase()} receipt recorded yet — record it first in <strong>Payments → Advance / Deposit</strong>, then print the Official Receipt here.</p>
+      </div>
+    );
+  }
+  return (
+    <>
+      <div className="no-print rlm-card" style={{ maxWidth: 480, display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+        <div className="rlm-field" style={{ flex: "1 1 160px", marginBottom: 0 }}><label className="rlm-label">OR No. (editable)</label><input className="rlm-input" value={orNo} onChange={e => setOrNo(e.target.value)} placeholder="OR-2026-0001" /></div>
+        <div className="rlm-field" style={{ flex: "1 1 140px", marginBottom: 0 }}><label className="rlm-label">Payment method</label>
+          <select className="rlm-select" value={method} onChange={e => setMethod(e.target.value)}>
+            <option>Cash</option><option>GCash</option><option>Bank Transfer</option><option>Check</option>
+          </select>
+        </div>
+      </div>
+      <div className="rlm-printable rlm-card" style={{ maxWidth: 640, border: "2px solid var(--ink)" }}>
+        <div style={{ textAlign: "center", borderBottom: "2px solid var(--ink)", paddingBottom: 12, marginBottom: 16 }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "#5b6663" }}>BeDa Rooms</div>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800, letterSpacing: "0.04em" }}>OFFICIAL RECEIPT</div>
+          <div style={{ fontSize: 11, color: "#5b6663" }}>{settings.landlordAddress || ""} {settings.landlordContact ? `• ${settings.landlordContact}` : ""}</div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div><span className="rlm-label">OR No.</span> <span className="rlm-mono" style={{ fontWeight: 700 }}>{orNo || rec.orNo || "—"}</span></div>
+          <div><span className="rlm-label">Date</span> {formatDate(rec.date)}</div>
+        </div>
+        <div style={{ background: "#F4F1E7", border: "1px solid var(--line)", borderRadius: 6, padding: "10px 14px", marginBottom: 14, fontSize: 14 }}>
+          <div><span className="rlm-label">Received from</span> <strong>{tenant.name}</strong>{tenant.room ? ` — ${tenant.room}` : ""}</div>
+          {tenant.address && <div style={{ fontSize: 12, color: "#5b6663" }}>{tenant.address}</div>}
+          {(tenant.idType || tenant.idNumber) && <div style={{ fontSize: 12 }}>ID: {tenant.idType ? `${tenant.idType} — ` : ""}{tenant.idNumber || ""}</div>}
+          <div style={{ marginTop: 6 }}><span className="rlm-label">Amount</span> <span className="rlm-mono" style={{ fontSize: 18, fontWeight: 700 }}>{formatMoney(rec.amount, settings.currency)}</span> <span style={{ fontSize: 12, color: "#5b6663" }}>via {method}</span></div>
+          <div style={{ fontSize: 12, fontStyle: "italic", color: "#5b6663", borderTop: "1px dashed var(--line)", marginTop: 8, paddingTop: 6 }}>{pesoWords(rec.amount, settings.currency)}.</div>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 10 }}><span className="rlm-label">Payment for</span> {cfg.label} — {cfg.blurb}</div>
+        <table className="rlm-table" style={{ marginBottom: 14, fontSize: 12 }}>
+          <thead><tr><th>Description</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead>
+          <tbody>
+            <tr><td>{cfg.label}</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(rec.amount, settings.currency)}</td></tr>
+            <tr style={{ fontWeight: 700, background: "#F4F1E7" }}><td>Total paid</td><td className="rlm-mono" style={{ textAlign: "right" }}>{formatMoney(rec.amount, settings.currency)}</td></tr>
+          </tbody>
+        </table>
+        <PrintIdBlock tenant={tenant} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginTop: 24, fontSize: 12 }}>
+          <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, textAlign: "center" }}>{settings.landlordName || "Authorized Signature"}<div style={{ fontSize: 10, color: "#5b6663" }}>Collector / Landlord</div></div>
+          <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, textAlign: "center" }}>{tenant.name}<div style={{ fontSize: 10, color: "#5b6663" }}>Payor</div></div>
+        </div>
+        <div style={{ fontSize: 10, color: "#5b6663", textAlign: "center", marginTop: 16, borderTop: "1px dashed var(--line)", paddingTop: 8 }}>
+          This Official Receipt acknowledges payment received — keep for records.
+        </div>
+      </div>
+      <div className="no-print" style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+        <button className="rlm-btn rlm-btn-primary" onClick={() => window.print()}><Printer size={15} /> Print / Save as PDF</button>
+      </div>
+    </>
+  );
+}
+
 function InvoiceTab({ tenants, payments, settings, selectedTenant, selectedTenantId, setSelectedTenantId, invoicePeriodKey, setInvoicePeriodKey }) {
   const periods = selectedTenant ? getPeriodsForTenant(selectedTenant) : [];
   const activePeriod = periods.find(p => p.key === invoicePeriodKey) || periods[0];
   const info = selectedTenant && activePeriod ? getPeriodInfo(selectedTenant, payments, activePeriod.year, activePeriod.month, activePeriod.half) : null;
   const balance = info ? Math.max(info.total - info.amountPaid, 0) : 0;
+  const moveinKinds = moveinKindsFor(selectedTenant);
+  const [docType, setDocType] = useState("rent"); // 'rent' | 'advance' | 'deposit'
+  const activeDoc = moveinKinds.includes(docType) ? docType : "rent";
 
   return (
     <div>
@@ -2646,7 +2895,16 @@ function InvoiceTab({ tenants, payments, settings, selectedTenant, selectedTenan
         <>
           <div className="no-print" style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
             <TenantPicker tenants={tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />
-            {selectedTenant && (
+            {selectedTenant && moveinKinds.length > 0 && (
+              <div className="rlm-field" style={{ maxWidth: 260 }}>
+                <label className="rlm-label">Document</label>
+                <select className="rlm-select" value={activeDoc} onChange={e => setDocType(e.target.value)}>
+                  <option value="rent">Monthly rent (per period)</option>
+                  {moveinKinds.map(k => <option key={k} value={k}>{MOVEIN_KINDS[k].label} — anytime</option>)}
+                </select>
+              </div>
+            )}
+            {selectedTenant && activeDoc === "rent" && (
               <div className="rlm-field" style={{ maxWidth: 240 }}>
                 <label className="rlm-label">Period</label>
                 <select className="rlm-select" value={activePeriod?.key || ""} onChange={e => setInvoicePeriodKey(e.target.value)}>
@@ -2656,7 +2914,9 @@ function InvoiceTab({ tenants, payments, settings, selectedTenant, selectedTenan
             )}
           </div>
 
-          {selectedTenant && info && (
+          {selectedTenant && activeDoc !== "rent" ? (
+            <MoveinInvoiceDoc tenant={selectedTenant} kind={activeDoc} settings={settings} />
+          ) : selectedTenant && info && (
             <>
               <div className="rlm-printable rlm-card" style={{ maxWidth: 640 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid var(--ink)", paddingBottom: 16, marginBottom: 20 }}>
@@ -2733,6 +2993,9 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
   const info = selectedTenant && activePeriod ? getPeriodInfo(selectedTenant, payments, activePeriod.year, activePeriod.month, activePeriod.half) : null;
   const [orNo, setOrNo] = useState("");
   const [method, setMethod] = useState("Cash");
+  const moveinKinds = moveinKindsFor(selectedTenant);
+  const [docType, setDocType] = useState("rent"); // 'rent' | 'advance' | 'deposit'
+  const activeDoc = moveinKinds.includes(docType) ? docType : "rent";
   useEffect(() => {
     if (selectedTenant && activePeriod) {
       const base = `OR-${activePeriod.key}-${String(selectedTenant.id||"").slice(0,4).toUpperCase()}`;
@@ -2748,7 +3011,16 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
       <p className="rlm-sub no-print">Issue a BIR-style Official Receipt for <strong>paid</strong> rent — distinct from Invoice (which is a bill). Only paid periods can be receipted.</p>
       <div className="no-print" style={{ display:"flex", gap:16, flexWrap:"wrap", marginBottom:20 }}>
         <TenantPicker tenants={tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />
-        {selectedTenant && (
+        {selectedTenant && moveinKinds.length > 0 && (
+          <div className="rlm-field" style={{ maxWidth: 260 }}>
+            <label className="rlm-label">Document</label>
+            <select className="rlm-select" value={activeDoc} onChange={e=>setDocType(e.target.value)}>
+              <option value="rent">Monthly rent (paid periods)</option>
+              {moveinKinds.map(k => <option key={k} value={k}>{MOVEIN_KINDS[k].label} — anytime</option>)}
+            </select>
+          </div>
+        )}
+        {selectedTenant && activeDoc === "rent" && (
           <div className="rlm-field" style={{ maxWidth:260 }}>
             <label className="rlm-label">Paid period</label>
             <select className="rlm-select" value={activePeriod?.key || ""} onChange={e=>setReceiptPeriodKey(e.target.value)}>
@@ -2758,7 +3030,9 @@ function OfficialReceiptTab({ tenants, payments, settings, selectedTenant, selec
           </div>
         )}
       </div>
-      {selectedTenant && info && (
+      {selectedTenant && activeDoc !== "rent" ? (
+        <MoveinReceiptDoc tenant={selectedTenant} kind={activeDoc} settings={settings} />
+      ) : selectedTenant && info && (
         <>
           <div className="no-print rlm-card" style={{ maxWidth:480, display:"flex", gap:12, flexWrap:"wrap", marginBottom:12 }}>
             <div className="rlm-field" style={{ flex:"1 1 160px", marginBottom:0 }}><label className="rlm-label">OR No. (editable)</label><input className="rlm-input" value={orNo} onChange={e=>setOrNo(e.target.value)} placeholder="OR-2026-0001" /></div>
@@ -2979,11 +3253,13 @@ function SettingsTab({ settings, saveSettings, onReset, tenants, payments, onRes
   }
 
   function downloadTenantsCSV() {
-    const header = ["Name", "Room", "ID number", "Address", "Contact", "Monthly rent", "Payment frequency", "Due day", "Move-in date", "Deposit type", "Advance amount", "Deposit amount"];
+    const header = ["Name", "Room", "ID number", "Address", "Contact", "Monthly rent", "Payment frequency", "Due day", "Move-in date", "Deposit type", "Advance amount", "Deposit amount", "Advance received date", "Advance OR no.", "Deposit received date", "Deposit OR no."];
     const rows = tenants.map(t => [
       t.name, t.room, t.idNumber, t.address, t.contact, t.monthlyRent,
       isSemiMonthly(t) ? "Twice a month (15th & 30th)" : "Once a month", t.dueDay, t.moveInDate,
       t.depositType, t.advanceAmount, t.depositAmount,
+      t.advanceReceipt?.date || "", t.advanceReceipt?.orNo || "",
+      t.depositReceipt?.date || "", t.depositReceipt?.orNo || "",
     ]);
     downloadFile(`tenants-${todayISO()}.csv`, toCSV([header, ...rows]), "text/csv;charset=utf-8;");
   }
