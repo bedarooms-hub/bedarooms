@@ -428,6 +428,12 @@ function isRenterAccount(user) {
   return String(user.email || "").endsWith("@renter.beda-rooms.local");
 }
 function isRenterSession(s){ return isRenterAccount(s?.user); }
+// Real Supabase session (syncs to cloud) vs hardcoded offline gates (localStorage only)
+function isLocalOnlySession(s){
+  const id = s?.user?.id;
+  return id === "admin-local" || id === "renter-local";
+}
+function isCloudSession(s){ return !!s?.user && !isLocalOnlySession(s); }
 
 function useSupabaseAuth() {
   const [session, setSession] = useState(null);
@@ -518,9 +524,24 @@ function AuthPanel({ session, showToast }) {
     );
   }
   if (session?.user) {
+    // Hardcoded offline gates (admin-local / renter-local) have NO Supabase JWT —
+    // nothing syncs. Never show them as "synced".
+    if (isLocalOnlySession(session)) {
+      return (
+        <div style={{ background:"#FFF3CD", border:"1px solid #FFE69C", borderRadius:6, padding:12, marginBottom:16, fontSize:13, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
+          <span><strong>Local mode — NOT synced to Supabase</strong> ({session.user.email}). Sign out and sign in with your Supabase account to sync tenants, payments &amp; ID photos to the cloud.</span>
+          <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={async()=>{
+            try { localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(RENTER_KEY); } catch {}
+            try { await window.storage.signOut(); } catch {}
+            try { showToast("Signed out"); } catch {}
+            setTimeout(()=>window.location.reload(), 150);
+          }}><LogOut size={14}/> Sign out</button>
+        </div>
+      );
+    }
     return (
       <div style={{ background:"#E8F5E9", border:"1px solid #A5D6A7", borderRadius:6, padding:12, marginBottom:16, fontSize:13, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
-        <span>Cloud: <strong>{session.user.email}</strong> — synced ✓ ({String(session.user.id||"").slice(0,8)}…)</span>
+        <span>Supabase ✓ <strong>{session.user.email}</strong> — synced ({String(session.user.id||"").slice(0,8)}…)</span>
         <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding:"6px 10px" }} onClick={async()=>{
           try { localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(RENTER_KEY); } catch {}
           try { await window.storage.signOut(); } catch {}
@@ -1467,7 +1488,7 @@ export default function RoomRentalManager() {
            <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
              <Home size={12}/> {tenants.length} tenant{tenants.length===1?"":"s"} • {online ? "Online" : "Offline"}
            </div>
-           <div style={{ opacity:0.7 }}>{cloudEnabled ? (session?.user ? `Cloud ${session.user.email}` : "Cloud ready — sign in") : "Local only"}</div>
+            <div style={{ opacity:0.7 }}>{cloudEnabled ? (isCloudSession(session) ? `Supabase ✓ ${session.user.email}` : "Local only — not synced") : "Local only"}</div>
            <div style={{ opacity:0.7 }}>{pwa.isStandalone ? "Installed ✓" : "Add to Home Screen for offline use"}</div>
          </div>
       </nav>
@@ -1574,11 +1595,11 @@ export default function RoomRentalManager() {
         )}
 
         {tab === "settings" && (
-          <SettingsTab settings={settings} saveSettings={saveSettings} onReset={resetAllData} tenants={tenants} payments={payments} onRestore={restoreBackup} />
+          <SettingsTab settings={settings} saveSettings={saveSettings} onReset={resetAllData} tenants={tenants} payments={payments} onRestore={restoreBackup} cloudOn={cloudEnabled && isCloudSession(session)} cloudEmail={session?.user?.email} />
         )}
 
         <footer className="no-print" style={{ marginTop:32, paddingTop:16, borderTop:"1px solid var(--line)", fontSize:11, color:"#5b6663", fontFamily:"var(--font-mono)", display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
-           <span>BeDa Rooms v{APP_VERSION} • PWA offline-ready • {cloudEnabled ? (session?.user ? `Cloud synced as ${session.user.email}` : "Cloud ready — sign in for sync") : "Local only"}</span>
+           <span>BeDa Rooms v{APP_VERSION} • PWA offline-ready • {cloudEnabled ? (isCloudSession(session) ? `Supabase ✓ synced as ${session.user.email}` : "Local only — sign in with Supabase to sync") : "Local only"}</span>
            <span>{tenants.length} tenants • {Object.keys(payments).length} payment ledgers</span>
          </footer>
       </div>
@@ -3239,7 +3260,7 @@ function ContractTab({ tenants, settings, selectedTenant, selectedTenantId, setS
   );
 }
 
-function SettingsTab({ settings, saveSettings, onReset, tenants, payments, onRestore }) {
+function SettingsTab({ settings, saveSettings, onReset, tenants, payments, onRestore, cloudOn, cloudEmail }) {
   const [form, setForm] = useState(settings);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -3279,9 +3300,15 @@ function SettingsTab({ settings, saveSettings, onReset, tenants, payments, onRes
 
       <div className="rlm-card" style={{ maxWidth: 480, marginBottom: 20 }}>
         <h3 style={{ marginTop: 0, fontFamily: "var(--font-display)" }}>Backup & restore</h3>
-        <p style={{ fontSize: 13, color: "#5b6663" }}>
-          Everything is stored in this browser only. Download a backup regularly — especially before clearing browser data or switching devices. You can also restore a previous backup below (merges / replaces current data).
-        </p>
+        {cloudOn ? (
+          <p style={{ fontSize: 13, color: "#2E7D32", background:"#E8F5E9", border:"1px solid #A5D6A7", borderRadius:4, padding:"8px 12px" }}>
+            ✓ <strong>Synced to Supabase</strong>{cloudEmail ? <> as <strong>{cloudEmail}</strong></> : null} — tenants, payments &amp; settings save to your backend, plus ID photos to the <code>renter-ids</code> bucket. This device also keeps an offline copy. Backups below are optional safety copies.
+          </p>
+        ) : (
+          <p style={{ fontSize: 13, color: "#5b6663" }}>
+            Everything is stored in this browser only. Download a backup regularly — especially before clearing browser data or switching devices. You can also restore a previous backup below (merges / replaces current data). <strong>Want cloud?</strong> Sign out, then sign in with your Supabase account so data syncs to your backend.
+          </p>
+        )}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
           <button className="rlm-btn rlm-btn-ghost" onClick={downloadTenantsCSV} disabled={tenants.length === 0}><Download size={14} /> Tenants (CSV)</button>
           <button className="rlm-btn rlm-btn-ghost" onClick={downloadBackupJSON}><Download size={14} /> Full backup (JSON)</button>
