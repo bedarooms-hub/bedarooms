@@ -290,9 +290,12 @@ function mergeRentalData(cloud, local) {
     });
     if (Object.keys(m).length) pay[tid] = m;
   });
-  const settings = { ...(l.settings || {}) };
+  // Settings: the device just used (local) wins — cloud only fills in keys
+  // that are blank locally. (Previously cloud overwrote local, wiping
+  // just-saved landlord details whenever the cloud row was stale.)
+  const settings = { ...(c.settings || {}), ...(l.settings || {}) };
   Object.entries(c.settings || {}).forEach(([k, v]) => {
-    if (v !== "" && v !== undefined && v !== null) settings[k] = v;
+    if ((settings[k] === "" || settings[k] === undefined || settings[k] === null) && v !== "" && v !== undefined && v !== null) settings[k] = v;
   });
   return { tenants: [...map.values()], payments: pay, settings };
 }
@@ -1052,6 +1055,9 @@ export default function RoomRentalManager() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
+  // syncStatus: 'unknown' | 'synced' | 'local-only' — drives the banner that tells
+  // the owner whether tenants actually reached Supabase (visible on phone or not).
+  const [syncStatus, setSyncStatus] = useState({ state: "unknown", detail: "" });
   const [toast, setToast] = useState(null);
   const showToast = (msg, ms=3200) => { setToast(msg); setTimeout(()=>setToast(null), ms); };
   const online = useOnline();
@@ -1116,6 +1122,22 @@ export default function RoomRentalManager() {
               await window.storage.set(STORAGE_KEY, JSON.stringify(next));
             }
           } catch {}
+          // --- sync banner: tell the owner whether this data is really in the cloud ---
+          try {
+            const cloudErr = window.storage?.lastCloudError?.() || null;
+            const cloudOk = window.storage?.lastCloudOk?.() === true;
+            const sess = session;
+            if (!cloudEnabled) {
+              setSyncStatus({ state: "local-only", detail: "Supabase not configured — data lives in this browser only." });
+            } else if (sess && isLocalOnlySession(sess)) {
+              setSyncStatus({ state: "local-only", detail: "Signed in locally (offline mode) — NOT synced to Supabase." });
+            } else if (sess && isCloudSession(sess)) {
+              if (cloudOk && !cloudErr) setSyncStatus({ state: "synced", detail: "" });
+              else setSyncStatus({ state: "local-only", detail: cloudErr || "Cloud save didn't confirm — data is in this browser only for now." });
+            } else {
+              setSyncStatus(prev => prev.state === "unknown" ? { state: "local-only", detail: "Sign in as Admin to sync across devices." } : prev);
+            }
+          } catch {}
         } else {
           setData({ tenants: [], payments: {}, settings: { ...DEFAULT_SETTINGS } });
         }
@@ -1132,13 +1154,55 @@ export default function RoomRentalManager() {
     setData(next);
     try {
       const res = await window.storage.set(STORAGE_KEY, JSON.stringify(next));
-      if (!res) setSaveError(true); else setSaveError(false);
-      if (!res) showToast("Storage full — try exporting and resetting data");
-      return !!res;
+      if (!res) {
+        setSaveError(true);
+        showToast("Storage full — try exporting and resetting data");
+        return false;
+      }
+      setSaveError(false);
+      // --- surface cloud failures LOUDLY: local write succeeded but Supabase
+      // didn't confirm. Previously this silently said "Tenant added" while the
+      // phone showed nothing. Now the banner + toast say NOT synced + why. ---
+      try {
+        const cloudErr = window.storage?.lastCloudError?.() || null;
+        const cloudOk = window.storage?.lastCloudOk?.() === true;
+        if (cloudEnabled && session && isCloudSession(session)) {
+          if (cloudOk && !cloudErr) {
+            setSyncStatus({ state: "synced", detail: "" });
+          } else {
+            setSyncStatus({ state: "local-only", detail: cloudErr || "Cloud save didn't confirm." });
+            showToast(`Saved in THIS browser only — NOT synced: ${cloudErr || "cloud unreachable"}. It will NOT show on your phone until sync works.`);
+          }
+        } else if (!cloudEnabled || (session && isLocalOnlySession(session))) {
+          setSyncStatus({ state: "local-only", detail: "Local mode — sign in with your Supabase account to sync to your phone." });
+        }
+      } catch {}
+      return true;
     } catch (e) {
       setSaveError(true);
       showToast("Could not save — check storage");
       return false;
+    }
+  }
+
+  // Manual "Sync now" — re-pushes the current in-memory data to Supabase
+  // (used by the local-only banner after going back online / fixing .env).
+  async function syncNow() {
+    if (!data) return;
+    showToast("Syncing to cloud…");
+    try {
+      const res = await window.storage.set(STORAGE_KEY, JSON.stringify(data));
+      const cloudErr = window.storage?.lastCloudError?.() || null;
+      const cloudOk = window.storage?.lastCloudOk?.() === true;
+      if (res && cloudEnabled && session && isCloudSession(session) && cloudOk && !cloudErr) {
+        setSyncStatus({ state: "synced", detail: "" });
+        showToast(`Synced ✓ ${data.tenants?.length || 0} tenant(s) now in the cloud — open the site on your phone with the SAME admin login to see them.`);
+      } else {
+        setSyncStatus({ state: "local-only", detail: cloudErr || "Sync didn't confirm." });
+        showToast(`Still not synced: ${cloudErr || "check internet / Supabase setup"}`);
+      }
+    } catch (e) {
+      showToast("Sync failed: " + (e.message || "unknown error"));
     }
   }
 
@@ -1495,6 +1559,24 @@ export default function RoomRentalManager() {
         {saveError && (
           <div className="no-print" style={{ background: "#F6E3DE", border: "1px solid var(--rust)", color: "var(--rust)", padding: "10px 14px", borderRadius: 4, marginBottom: 16, fontSize: 13 }}>
             Couldn't save your last change — storage may be full. Export a backup, then reset.
+          </div>
+        )}
+        {syncStatus.state === "local-only" && (
+          <div className="no-print" role="alert" style={{ background: "#FFF3CD", border: "1px solid #FFE69C", color: "#664D03", padding: "10px 14px", borderRadius: 4, marginBottom: 16, fontSize: 13 }}>
+            <strong>⚠️ Saved in this browser only — NOT on your phone yet</strong>
+            {syncStatus.detail ? <> ({syncStatus.detail})</> : null}
+            <br />
+            To see tenants on your phone: 1) stay signed in as the <strong>same Admin email</strong> on both devices ({session?.user?.email || "—"}),
+            2) make sure you're online, 3) tap <strong>Sync now</strong>. If it keeps failing, check <code>.env</code> Supabase URL/key, run <code>supabase/SETUP-ALL.sql</code> once, and redeploy.
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button type="button" className="rlm-btn rlm-btn-primary" style={{ padding: "6px 12px" }} onClick={syncNow}><RefreshCw size={14} /> Sync now ({tenants.length} tenant{tenants.length === 1 ? "" : "s"})</button>
+              <button type="button" className="rlm-btn rlm-btn-ghost" style={{ padding: "6px 12px" }} onClick={() => { try { const payload = { exportedAt: new Date().toISOString(), version: APP_VERSION, tenants, payments, settings }; downloadFile(`rental-manager-backup-${todayISO()}.json`, JSON.stringify(payload, null, 2), "application/json"); } catch {} }}>Export backup</button>
+            </div>
+          </div>
+        )}
+        {syncStatus.state === "synced" && tenants.length > 0 && (
+          <div className="no-print" style={{ background: "#E8F5E9", border: "1px solid #A5D6A7", color: "#2E7D32", padding: "8px 12px", borderRadius: 4, marginBottom: 12, fontSize: 12 }}>
+            ✓ Synced to cloud as <strong>{session?.user?.email}</strong> — {tenants.length} tenant{tenants.length === 1 ? "" : "s"} will show on your phone when you sign in there with the <strong>same</strong> email.
           </div>
         )}
 
@@ -3359,15 +3441,15 @@ function SettingsTab({ settings, saveSettings, onReset, tenants, payments, onRes
           <li>Offline-ready via Service Worker (precaches UI & fonts)</li>
           <li>Install prompt appears automatically when eligible</li>
           <li>Updates check hourly; you'll see a banner when a new version is ready</li>
-          <li>Data is never sent to a server — only localStorage on this device</li>
+          <li>When signed in as Admin, tenants sync to Supabase AND stay cached for offline use</li>
         </ul>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <button className="rlm-btn rlm-btn-ghost" onClick={()=> window.location.reload()}><RefreshCw size={14}/> Reload</button>
-          <button className="rlm-btn rlm-btn-ghost" onClick={async()=>{ try{ await window.storage.clearAllCache(); alert('Cache cleared — reloading clean.'); location.reload(); } catch(e){ alert('Clear failed: '+e.message); }}}><Trash2 size={14}/> Clear Cache (this window)</button>
+          <button className="rlm-btn rlm-btn-ghost" onClick={async()=>{ try{ await window.storage.clearAllCache(); alert('App cache cleared — your tenants are kept. Reloading…'); location.reload(); } catch(e){ alert('Clear failed: '+e.message); }}}><Trash2 size={14}/> Clear Cache (keeps tenants)</button>
           <button className="rlm-btn rlm-btn-primary" onClick={async()=>{ try{ await window.storage.clearCacheAndOpenNewWindow(); } catch(e){ alert('Clear failed: '+e.message); }}}><RefreshCw size={14}/> Clear Cache & Open New Clean Window</button>
           <button className="rlm-btn rlm-btn-ghost" onClick={()=> { if('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())).then(()=>alert('Service workers unregistered — reload to re-install.')); }}><LogOut size={14}/> Unregister SW (debug)</button>
         </div>
-        <p style={{ fontSize:11, color:"#5b6663", marginTop:8 }}>Clear Cache removes <code>rlm:*</code>, <code>sb-*</code>, CacheStorage & Service Workers, then opens <code>{location.origin}</code> in a new tab with <code>?clear</code> — use if new window still shows stale data.</p>
+        <p style={{ fontSize:11, color:"#5b6663", marginTop:8 }}>Clear Cache removes login tokens, CacheStorage & Service Workers — <strong>your tenants are always kept</strong>. Then opens <code>{location.origin}</code> in a new tab with <code>?clear</code> — use if a new window still shows a stale app version. To delete tenants, use Danger zone below (or restore a backup).</p>
       </div>
 
       <div className="rlm-card" style={{ maxWidth: 480, borderColor: "var(--rust)" }}>

@@ -18,6 +18,17 @@ function isQuotaError(e) {
 // Map App.jsx STORAGE_KEY ("rental-data") to Supabase table rental_data.data
 const CLOUD_KEY = "rental-data";
 
+// Last cloud sync diagnostics — surfaced to App.jsx so the UI can warn
+// "saved in this browser only, NOT synced" instead of silently succeeding.
+let _lastCloudError = null;
+let _lastCloudOk = false;
+let _lastSyncAt = null;
+function recordCloudResult(ok, errMsg) {
+  _lastCloudOk = ok;
+  _lastCloudError = errMsg || null;
+  _lastSyncAt = new Date().toISOString();
+}
+
 async function cloudGet() {
   if (!isSupabaseConfigured || !supabase) return null;
   try {
@@ -48,6 +59,7 @@ async function cloudGet() {
       // No row yet → treat as empty
       if (error.code === "PGRST116") return null;
       console.warn("[storage cloudGet]", error.message);
+      recordCloudResult(false, "Load failed: " + error.message);
       return null;
     }
     if (!data?.data) return null;
@@ -59,10 +71,16 @@ async function cloudGet() {
 }
 
 async function cloudSet(value) {
-  if (!isSupabaseConfigured || !supabase) return false;
+  if (!isSupabaseConfigured || !supabase) {
+    recordCloudResult(false, "Supabase not configured (.env missing)");
+    return false;
+  }
   try {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) return false;
+    if (!session?.user) {
+      recordCloudResult(false, "Not signed in — saved locally only");
+      return false;
+    }
     let parsed;
     try { parsed = JSON.parse(value); } catch { parsed = {}; }
     const { error } = await supabase
@@ -70,11 +88,15 @@ async function cloudSet(value) {
       .upsert({ user_id: session.user.id, data: parsed }, { onConflict: "user_id" });
     if (error) {
       console.warn("[storage cloudSet]", error.message);
+      recordCloudResult(false, error.message);
       return false;
     }
+    recordCloudResult(true, null);
     return true;
   } catch (e) {
+    const msg = e?.message || String(e);
     console.warn("[storage cloudSet] failed", e);
+    recordCloudResult(false, msg);
     return false;
   }
 }
@@ -94,11 +116,17 @@ window.storage = {
           const localHasData = localParsed && (localParsed.tenants?.length || Object.keys(localParsed.payments || {}).length);
           if (cloudEmpty && localHasData) {
             console.log("[storage] migrating local data to cloud...");
-            await cloudSet(localRaw);
+            const ok = await cloudSet(localRaw);
+            if (ok) return { key, value: localRaw, shared };
+            // Cloud push failed (offline/RLS) — keep local so nothing is lost.
+            // Return local WITHOUT mirroring the empty cloud over it.
             return { key, value: localRaw, shared };
           }
         } catch {}
-        // Mirror to localStorage for offline access
+        // Cloud loaded fine — record it and mirror to localStorage for offline access.
+        // (App.jsx unions this with its pre-fetch local snapshot, so offline
+        // additions on this device are merged back, never destroyed.)
+        recordCloudResult(true, null);
         try { localStorage.setItem(fullKey(key, shared), cloud.value); } catch {}
         return cloud;
       }
@@ -225,9 +253,16 @@ window.storage = {
     // also try global signOut in background (don't await)
     supabase.auth.signOut().catch(()=>{});
   },
+  // NOTE: this deliberately PRESERVES tenant data (rlm:user: / rlm:shared:)
+  // so tapping "Clear Cache" can never wipe unsynced tenants. Use Settings →
+  // "Reset all data" for an explicit full wipe (that one clears cloud too).
   async clearAllCache() {
     try {
-      Object.keys(localStorage).forEach(k => { if (k.startsWith(PREFIX) || k.startsWith("sb-") || k === "rlm:last-tab") localStorage.removeItem(k); });
+      Object.keys(localStorage).forEach(k => {
+        if (k.startsWith("sb-") || k === "rlm:last-tab") localStorage.removeItem(k);
+        // Remove rlm: gates/caches but NEVER the tenant data blob
+        if (k.startsWith(PREFIX) && !k.startsWith(`${PREFIX}user:`) && !k.startsWith(`${PREFIX}shared:`)) localStorage.removeItem(k);
+      });
       sessionStorage.clear();
     } catch {}
     try {
@@ -256,6 +291,10 @@ window.storage = {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => cb(session));
     return () => subscription.unsubscribe();
   },
+  // Sync diagnostics for the UI banner (App.jsx reads these after get/set)
+  lastCloudError() { return _lastCloudError; },
+  lastCloudOk() { return _lastCloudOk; },
+  lastSyncAt() { return _lastSyncAt; },
   isCloudEnabled: isSupabaseConfigured,
 };
 
