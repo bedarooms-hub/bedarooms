@@ -1,0 +1,35 @@
+{
+  "exportedAt": "2026-10-03T00:00:00.000Z",
+  "version": "1.1.0-pwa",
+  "tenants": [
+    {
+      "id": "tenant-francis-seblos-01",
+      "name": "Francis James G Seblos",
+      "room": "Room 1",
+      "idType": "",
+      "idNumber": "2026-000691",
+      "idImagePath": "",
+      "email": "",
+      "address": "Tandayag, Amlan, Negros Oriental",
+      "contact": "0961 524 8911",
+      "monthlyRent": 0,
+      "dueDay": 10,
+      "moveInDate": "2026-02-10",
+      "additionalFees": [],
+      "submeters": [],
+      "depositType": "none",
+      "advanceAmount": 0,
+      "depositAmount": 0,
+      "depositNotes": "",
+      "paymentFrequency": "monthly",
+      "birthdate": "2004-09-27",
+      "emergencyContact": "09069643910",
+      "lengthOfStay": "",
+      "occupants": "",
+      "pets": "",
+      "work": ""
+    }
+  ],
+  "payments": {},
+  "settings": {}
+}
