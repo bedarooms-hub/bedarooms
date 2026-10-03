@@ -52,6 +52,13 @@ create trigger on_auth_user_created
 alter table public.profiles enable row level security;
 alter table public.rental_data enable row level security;
 
+-- Grants (WITHOUT these every read/write fails with
+-- "permission denied for table rental_data" before RLS is even checked —
+-- tables made via raw SQL get no role grants by default).
+-- RLS policies below still control WHICH rows each user may touch.
+grant all on public.profiles to anon, authenticated;
+grant all on public.rental_data to anon, authenticated;
+
 drop policy if exists "profiles self" on public.profiles;
 create policy "profiles self" on public.profiles
   for all using (auth.uid() = id) with check (auth.uid() = id);
@@ -132,6 +139,8 @@ create table if not exists public.contract_signatures (
 create index if not exists contract_signatures_tenant_idx on public.contract_signatures (tenant_id);
 
 alter table public.contract_signatures enable row level security;
+
+grant all on public.contract_signatures to anon, authenticated;
 
 drop policy if exists "contract_signatures admin all" on public.contract_signatures;
 create policy "contract_signatures admin all" on public.contract_signatures
